@@ -931,7 +931,7 @@ You will be given a query and the markdown of a webpage that has been filtered t
 		# File System Actions
 
 		@self.registry.action(
-			'Supports formats: .txt, .md, .json, .jsonl, .csv, .pdf. For PDF files, write content in markdown format and it will be automatically converted to a properly formatted PDF document.'
+			'Supports formats: .txt, .md, .json, .jsonl, .csv, .pdf, .jpg, .jpeg, .png, .gif, .bmp, .webp. For PDF files, write content in markdown format and it will be automatically converted to a properly formatted PDF document. For image files (.jpg, .jpeg, .png, .gif, .bmp, .webp), a minimal dummy image will be created automatically (content parameter can be empty or any text - it will be ignored for images).'
 		)
 		async def write_file(
 			file_name: str,
@@ -941,14 +941,23 @@ You will be given a query and the markdown of a webpage that has been filtered t
 			trailing_newline: bool = True,
 			leading_newline: bool = False,
 		):
-			if trailing_newline:
-				content += '\n'
-			if leading_newline:
-				content = '\n' + content
-			if append:
-				result = await file_system.append_file(file_name, content)
+			# Check if this is an image file
+			file_ext = file_name.rsplit('.', 1)[-1].lower() if '.' in file_name else ''
+			is_image = file_ext in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp']
+
+			if is_image:
+				# For image files, content doesn't matter - we create a dummy image
+				result = await file_system.write_file(file_name, '')
 			else:
-				result = await file_system.write_file(file_name, content)
+				# For text-based files, handle newlines as before
+				if trailing_newline:
+					content += '\n'
+				if leading_newline:
+					content = '\n' + content
+				if append:
+					result = await file_system.append_file(file_name, content)
+				else:
+					result = await file_system.write_file(file_name, content)
 			logger.info(f'💾 {result}')
 			return ActionResult(extracted_content=result, long_term_memory=result)
 

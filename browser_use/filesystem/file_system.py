@@ -1,4 +1,5 @@
 import asyncio
+import io
 import re
 import shutil
 from abc import ABC, abstractmethod
@@ -6,6 +7,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
+from PIL import Image
 from pydantic import BaseModel, Field
 from reportlab.lib.pagesizes import letter
 from reportlab.lib.styles import getSampleStyleSheet
@@ -164,6 +166,53 @@ class PdfFile(BaseFile):
 			await asyncio.get_event_loop().run_in_executor(executor, lambda: self.sync_to_disk_sync(path))
 
 
+class ImageFile(BaseFile):
+	"""Image file implementation - creates a simple dummy image"""
+
+	_extension: str = ''
+
+	def __init__(self, **data):
+		# Extract extension from name if it includes one, before calling super()
+		name = data.get('name', '')
+		if '.' in name:
+			name_parts = name.rsplit('.', 1)
+			if len(name_parts) == 2 and name_parts[1].lower() in ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp']:
+				self._extension = name_parts[1].lower()
+				data['name'] = name_parts[0]  # Remove extension from name
+		super().__init__(**data)
+
+	@property
+	def extension(self) -> str:
+		return self._extension or 'jpg'
+
+	def sync_to_disk_sync(self, path: Path) -> None:
+		file_path = path / self.full_name
+		try:
+			# Create a simple 1x1 pixel image as a minimal dummy file
+			# This satisfies file upload requirements without being too large
+			img = Image.new('RGB', (1, 1), color=(255, 255, 255))
+
+			# Determine format from extension
+			format_map = {
+				'jpg': 'JPEG',
+				'jpeg': 'JPEG',
+				'png': 'PNG',
+				'gif': 'GIF',
+				'bmp': 'BMP',
+				'webp': 'WEBP',
+			}
+			img_format = format_map.get(self.extension, 'JPEG')
+
+			# Save to file
+			img.save(str(file_path), format=img_format)
+		except Exception as e:
+			raise FileSystemError(f"Error: Could not write to image file '{self.full_name}'. {str(e)}")
+
+	async def sync_to_disk(self, path: Path) -> None:
+		with ThreadPoolExecutor() as executor:
+			await asyncio.get_event_loop().run_in_executor(executor, lambda: self.sync_to_disk_sync(path))
+
+
 class FileSystemState(BaseModel):
 	"""Serializable state of the file system"""
 
@@ -194,6 +243,12 @@ class FileSystem:
 			'jsonl': JsonlFile,
 			'csv': CsvFile,
 			'pdf': PdfFile,
+			'jpg': ImageFile,
+			'jpeg': ImageFile,
+			'png': ImageFile,
+			'gif': ImageFile,
+			'bmp': ImageFile,
+			'webp': ImageFile,
 		}
 
 		self.files = {}

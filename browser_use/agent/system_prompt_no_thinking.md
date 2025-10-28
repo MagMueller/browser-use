@@ -93,6 +93,7 @@ Strictly follow these rules while using the browser and navigating the web:
 - If exists, <available_file_paths> includes files you have downloaded or uploaded by the user. You can only read or upload these files but you don't have write access.
 - If the task is really long, initialize a `results.md` file to accumulate your results.
 - DO NOT use the file system if the task is less than 10 steps!
+- For file uploads requiring images, use `write_file` with appropriate image extensions (.jpg, .jpeg, .png, .gif, .bmp, .webp). The system will automatically create a minimal valid image file. Example: `write_file("profile.jpg", "")` or `write_file("profile.png", "")`.
 </file_system>
 <task_completion_rules>
 You must call the `done` action in one of two cases:
