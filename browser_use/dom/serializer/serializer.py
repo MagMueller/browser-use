@@ -497,8 +497,16 @@ class DOMTreeSerializer:
 				if has_validation_attrs:
 					is_visible = True  # Force visibility for validation elements
 
-			# Include if visible, scrollable, has children, or is shadow host
-			if is_visible or is_scrollable or has_shadow_content or is_shadow_host:
+			# FILE INPUT DETECTION: Always include file input elements even if hidden
+			# File inputs are often hidden with custom styling on top, but must remain accessible for upload_file action
+			is_file_input = (
+				node.node_name.upper() == 'INPUT'
+				and node.attributes
+				and node.attributes.get('type', '').lower() == 'file'
+			)
+
+			# Include if visible, scrollable, has children, is shadow host, or is file input
+			if is_visible or is_scrollable or has_shadow_content or is_shadow_host or is_file_input:
 				simplified = SimplifiedNode(original_node=node, children=[], is_shadow_host=is_shadow_host)
 
 				# Process ALL children including shadow roots with enhanced logging
@@ -543,11 +551,19 @@ class DOMTreeSerializer:
 		# Keep meaningful nodes
 		is_visible = node.original_node.snapshot_node and node.original_node.is_visible
 
+		# Always preserve file input elements even if hidden
+		is_file_input = (
+			node.original_node.node_name.upper() == 'INPUT'
+			and node.original_node.attributes
+			and node.original_node.attributes.get('type', '').lower() == 'file'
+		)
+
 		if (
 			is_visible  # Keep all visible nodes
 			or node.original_node.is_actually_scrollable
 			or node.original_node.node_type == NodeType.TEXT_NODE
 			or node.children
+			or is_file_input  # Keep file inputs even if hidden
 		):
 			return node
 
@@ -558,8 +574,15 @@ class DOMTreeSerializer:
 		is_interactive = self._is_interactive_cached(node.original_node)
 		is_visible = node.original_node.snapshot_node and node.original_node.is_visible
 
-		# Only collect elements that are both interactive AND visible
-		if is_interactive and is_visible:
+		# File inputs should be collected even if hidden
+		is_file_input = (
+			node.original_node.node_name.upper() == 'INPUT'
+			and node.original_node.attributes
+			and node.original_node.attributes.get('type', '').lower() == 'file'
+		)
+
+		# Only collect elements that are both interactive AND visible (or file inputs)
+		if is_interactive and (is_visible or is_file_input):
 			elements.append(node)
 
 		for child in node.children:
@@ -576,8 +599,15 @@ class DOMTreeSerializer:
 			is_interactive_assign = self._is_interactive_cached(node.original_node)
 			is_visible = node.original_node.snapshot_node and node.original_node.is_visible
 
-			# Only add to selector map if element is both interactive AND visible
-			if is_interactive_assign and is_visible:
+			# File inputs should be assigned indices even if hidden
+			is_file_input = (
+				node.original_node.node_name.upper() == 'INPUT'
+				and node.original_node.attributes
+				and node.original_node.attributes.get('type', '').lower() == 'file'
+			)
+
+			# Only add to selector map if element is both interactive AND visible (or file input)
+			if is_interactive_assign and (is_visible or is_file_input):
 				# Mark node as interactive
 				node.is_interactive = True
 				# Store backend_node_id in selector map (model outputs backend_node_id)
