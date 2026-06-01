@@ -36,6 +36,11 @@ class _Receipt(BaseModel):
 	total: float
 
 
+class _Controller:
+	def get_output_model(self):
+		return _Receipt
+
+
 def test_model_id_includes_bcode_provider_prefix():
 	llm = _llm_class('ChatAnthropic')(model='claude-sonnet-4-5')
 	assert Agent(task='x', llm=llm, browser=_Browser())._model_id() == 'anthropic/claude-sonnet-4-5'
@@ -67,6 +72,10 @@ def test_command_override_supports_source_checkout(monkeypatch):
 	from browser_use.bcode.service import _bcode_command
 
 	assert _bcode_command() == ['bun', 'run', '--cwd', '/repo/packages/opencode', '--conditions=browser', './src/index.ts']
+
+
+def test_controller_output_model_is_used_for_structured_output():
+	assert Agent(task='x', browser=_Browser(), controller=_Controller()).output_model is _Receipt
 
 
 @pytest.mark.asyncio

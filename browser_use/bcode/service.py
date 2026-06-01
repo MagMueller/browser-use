@@ -174,7 +174,14 @@ class Agent:
 		self.browser = browser
 		self.timeout = timeout
 		self.on_event = on_event
-		self.output_model = output_model or _unsupported.pop('output_model_schema', None)
+		controller = _unsupported.pop('controller', None)
+		tools = _unsupported.pop('tools', None)
+		self.output_model = (
+			output_model
+			or _unsupported.pop('output_model_schema', None)
+			or _output_model_from_tools(controller)
+			or _output_model_from_tools(tools)
+		)
 		self.state_dir = Path(state_dir) if state_dir else None
 		self.workspace_dir = Path(workspace_dir) if workspace_dir else None
 		self.extra_args = list(extra_args or [])
@@ -825,6 +832,20 @@ def _model_from_llm(llm: Any) -> str | None:
 		value = getattr(llm, attr, None)
 		if isinstance(value, str) and value:
 			return value
+	return None
+
+
+def _output_model_from_tools(value: Any) -> type[BaseModel] | None:
+	if value is None:
+		return None
+	get_output_model = getattr(value, 'get_output_model', None)
+	if callable(get_output_model):
+		output_model = get_output_model()
+		if isinstance(output_model, type) and issubclass(output_model, BaseModel):
+			return output_model
+	output_model = getattr(value, '_output_model', None)
+	if isinstance(output_model, type) and issubclass(output_model, BaseModel):
+		return output_model
 	return None
 
 
