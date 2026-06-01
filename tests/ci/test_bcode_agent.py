@@ -263,6 +263,8 @@ if sys.argv[1] == "export":
 	captured = json.loads(capture.read_text())
 	assert captured['config']['instructions']
 	assert captured['config']['agent']['build']['steps'] == 7
+	assert captured['config']['tool_output']['max_lines'] == 600
+	assert captured['config']['tool_output']['max_bytes'] == 24000
 	assert 'Browser Use structured output' in captured['instructions']
 	assert 'Prefer concise answers.' in captured['instructions']
 	assert 'acct-123' in captured['instructions']

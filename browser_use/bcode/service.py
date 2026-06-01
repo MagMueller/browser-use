@@ -32,6 +32,8 @@ BCODE_COMMAND_ENV = 'BROWSER_USE_BCODE_COMMAND'
 BCODE_LEGACY_BINARY_ENVS = ('BCODE_BINARY', 'BCODE_BIN_PATH')
 BCODE_BROWSER_EXECUTE_MAX_TIMEOUT_ENV = 'BROWSER_USE_BCODE_BROWSER_EXECUTE_MAX_TIMEOUT_MS'
 BCODE_DEFAULT_BROWSER_EXECUTE_MAX_TIMEOUT_MS = 45_000
+BCODE_TOOL_OUTPUT_MAX_LINES = 600
+BCODE_TOOL_OUTPUT_MAX_BYTES = 24_000
 
 
 class BcodeNotInstalledError(RuntimeError):
@@ -734,6 +736,10 @@ def _write_bcode_config(
 		'share': 'disabled',
 		'autoupdate': False,
 		'snapshot': False,
+		'tool_output': {
+			'max_lines': BCODE_TOOL_OUTPUT_MAX_LINES,
+			'max_bytes': BCODE_TOOL_OUTPUT_MAX_BYTES,
+		},
 	}
 	if instructions_file is not None:
 		payload['instructions'] = [str(instructions_file)]
