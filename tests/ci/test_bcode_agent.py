@@ -251,10 +251,11 @@ if sys.argv[1] == "export":
 		allowed_domains=['example.com'],
 		blocked_domains=['ads.example.com'],
 		workspace_dir=tmp_path / 'workspace',
-	).run()
+	).run(max_steps=7)
 
 	captured = json.loads(capture.read_text())
 	assert captured['config']['instructions']
+	assert captured['config']['agent']['build']['steps'] == 7
 	assert 'Browser Use structured output' in captured['instructions']
 	assert 'Prefer concise answers.' in captured['instructions']
 	assert 'acct-123' in captured['instructions']

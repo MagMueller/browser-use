@@ -265,7 +265,7 @@ class Agent:
 		bcode_cmd = _bcode_command()
 		started = time.monotonic()
 		steps: list[StepRecord] = []
-		stderr_blob = b''
+		stderr_chunks: list[bytes] = []
 		final_summary: str | None = None
 		failure: str | None = None
 		workspace_cm: tempfile.TemporaryDirectory[str] | None = None
@@ -295,7 +295,7 @@ class Agent:
 			bcode_dir.mkdir(parents=True, exist_ok=True)
 			screenshot_dir = bcode_dir / 'screenshots'
 			instructions_file = self._write_browser_use_instructions(bcode_dir)
-			_write_bcode_config(bcode_dir / 'bcode.json', self._model_id(), instructions_file)
+			_write_bcode_config(bcode_dir / 'bcode.json', self._model_id(), instructions_file, max_steps=max_steps)
 
 			env = {**os.environ, **self._env_overrides(cdp_url, workspace, screenshot_dir=screenshot_dir)}
 			argv = self._argv(bcode_cmd, task, max_steps=max_steps)
@@ -331,7 +331,18 @@ class Agent:
 					if event.get('sessionID') and not self.session_id:
 						self.session_id = str(event['sessionID'])
 
+			async def read_stderr() -> None:
+				assert proc.stderr is not None
+				while True:
+					chunk = await proc.stderr.read(8192)
+					if not chunk:
+						break
+					stderr_chunks.append(chunk)
+					if sum(len(item) for item in stderr_chunks) > 1_000_000:
+						stderr_chunks[:] = [b''.join(stderr_chunks)[-1_000_000:]]
+
 			stdout_task = asyncio.create_task(read_stdout())
+			stderr_task = asyncio.create_task(read_stderr())
 			try:
 				if self.timeout:
 					exit_code = await asyncio.wait_for(proc.wait(), timeout=self.timeout)
@@ -342,8 +353,7 @@ class Agent:
 				exit_code = 124
 			finally:
 				await stdout_task
-				if proc.stderr is not None:
-					stderr_blob = await proc.stderr.read()
+				await stderr_task
 
 			export_data: dict[str, Any] | None = None
 			export_usage: _UsageView | None = None
@@ -362,7 +372,7 @@ class Agent:
 				failure=failure,
 				steps=steps,
 				events=[],
-				stderr=stderr_blob.decode(errors='replace'),
+				stderr=b''.join(stderr_chunks).decode(errors='replace'),
 				duration_seconds=time.monotonic() - started,
 			)
 			if self.output_model is not None and final_summary:
@@ -688,7 +698,13 @@ async def _maybe_call(fn: Any | None, *args: Any) -> None:
 		await value
 
 
-def _write_bcode_config(path: Path, model_id: str, instructions_file: Path | None = None) -> None:
+def _write_bcode_config(
+	path: Path,
+	model_id: str,
+	instructions_file: Path | None = None,
+	*,
+	max_steps: int | None = None,
+) -> None:
 	payload = {
 		'model': model_id,
 		'share': 'disabled',
@@ -697,6 +713,8 @@ def _write_bcode_config(path: Path, model_id: str, instructions_file: Path | Non
 	}
 	if instructions_file is not None:
 		payload['instructions'] = [str(instructions_file)]
+	if max_steps is not None:
+		payload['agent'] = {'build': {'steps': max(1, int(max_steps))}}
 	path.write_text(json.dumps(payload, indent=2) + '\n')
 
 
