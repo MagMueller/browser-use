@@ -180,6 +180,7 @@ class Agent:
 		self.extra_args = list(extra_args or [])
 		ctor_max_steps = _unsupported.pop('max_steps', None) or _unsupported.pop('max_turns', None)
 		self._ctor_max_steps: int | None = int(ctor_max_steps) if ctor_max_steps else None
+		self.initial_actions = _unsupported.pop('initial_actions', None)
 
 		self.provider = _provider_from_llm(llm)
 		self._model = _model_from_llm(llm)
@@ -265,6 +266,7 @@ class Agent:
 				owned_browser = True
 
 			await _ensure_browser_started(self.browser)
+			await _execute_initial_actions(self.browser, self.initial_actions)
 			cdp_url = _browser_cdp_url(self.browser)
 			if not cdp_url:
 				raise RuntimeError('BrowserSession did not expose a CDP websocket URL after start().')
@@ -677,6 +679,50 @@ async def _ensure_browser_started(browser: Any) -> None:
 	value = start()
 	if hasattr(value, '__await__'):
 		await value
+
+
+async def _execute_initial_actions(browser: Any, initial_actions: Any) -> None:
+	if not initial_actions:
+		return
+	for action in initial_actions:
+		if not isinstance(action, dict):
+			warnings.warn(
+				f'browser_use.bcode.Agent only supports dict initial actions; ignored {type(action).__name__}.',
+				stacklevel=2,
+			)
+			continue
+		navigate = action.get('navigate')
+		if not isinstance(navigate, dict) or not isinstance(navigate.get('url'), str):
+			warnings.warn(
+				f'browser_use.bcode.Agent only supports navigate initial actions; ignored {action!r}.',
+				stacklevel=2,
+			)
+			continue
+		await _navigate_browser(browser, navigate['url'], bool(navigate.get('new_tab', False)))
+
+
+async def _navigate_browser(browser: Any, url: str, new_tab: bool) -> None:
+	navigate_to = getattr(browser, 'navigate_to', None)
+	if navigate_to is not None:
+		value = navigate_to(url, new_tab=new_tab)
+		if hasattr(value, '__await__'):
+			await value
+		return
+
+	event_bus = getattr(browser, 'event_bus', None)
+	dispatch = getattr(event_bus, 'dispatch', None)
+	if dispatch is not None:
+		from browser_use.browser.events import NavigateToUrlEvent
+
+		value = dispatch(NavigateToUrlEvent(url=url, new_tab=new_tab))
+		if hasattr(value, '__await__'):
+			await value
+		return
+
+	warnings.warn(
+		'browser_use.bcode.Agent received navigate initial_actions, but the browser does not support navigate_to().',
+		stacklevel=2,
+	)
 
 
 def _provider_from_llm(llm: Any) -> str:

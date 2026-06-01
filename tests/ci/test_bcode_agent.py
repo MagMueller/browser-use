@@ -22,6 +22,14 @@ class _Browser:
 	cdp_url = 'ws://127.0.0.1:9222/devtools/browser/test'
 
 
+class _NavigatingBrowser(_Browser):
+	def __init__(self):
+		self.navigations = []
+
+	async def navigate_to(self, url: str, new_tab: bool = False):
+		self.navigations.append((url, new_tab))
+
+
 def test_model_id_includes_bcode_provider_prefix():
 	llm = _llm_class('ChatAnthropic')(model='claude-sonnet-4-5')
 	assert Agent(task='x', llm=llm, browser=_Browser())._model_id() == 'anthropic/claude-sonnet-4-5'
@@ -164,3 +172,30 @@ if sys.argv[1] == "export":
 	assert result.steps[0].tool_output['output'] == 'saw page'
 	assert result.steps[0].screenshot_paths
 	assert result.history[0].state.get_screenshot() == png_b64
+
+
+@pytest.mark.asyncio
+async def test_bcode_agent_executes_navigate_initial_actions(tmp_path, monkeypatch):
+	fake = tmp_path / 'bcode'
+	fake.write_text(
+		"""#!/usr/bin/env python3
+import json, sys
+if sys.argv[1] == "run":
+    print(json.dumps({"type": "text", "timestamp": 1, "sessionID": "sess-nav", "part": {"text": "done"}}), flush=True)
+if sys.argv[1] == "export":
+    raise SystemExit(0)
+""",
+	)
+	fake.chmod(0o755)
+	monkeypatch.setenv('BROWSER_USE_BCODE_BINARY', str(fake))
+	browser = _NavigatingBrowser()
+
+	await Agent(
+		task='Summarize the page',
+		llm=_llm_class('ChatOpenAI')(model='gpt-5.5'),
+		browser=browser,
+		initial_actions=[{'navigate': {'url': 'https://example.com', 'new_tab': False}}],
+		workspace_dir=tmp_path / 'workspace',
+	).run()
+
+	assert browser.navigations == [('https://example.com', False)]
