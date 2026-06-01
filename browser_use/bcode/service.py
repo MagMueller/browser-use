@@ -32,6 +32,8 @@ BCODE_COMMAND_ENV = 'BROWSER_USE_BCODE_COMMAND'
 BCODE_LEGACY_BINARY_ENVS = ('BCODE_BINARY', 'BCODE_BIN_PATH')
 BCODE_BROWSER_EXECUTE_MAX_TIMEOUT_ENV = 'BROWSER_USE_BCODE_BROWSER_EXECUTE_MAX_TIMEOUT_MS'
 BCODE_DEFAULT_BROWSER_EXECUTE_MAX_TIMEOUT_MS = 45_000
+BCODE_CDP_CONNECT_TIMEOUT_ENV = 'BROWSER_USE_BCODE_CDP_CONNECT_TIMEOUT_MS'
+BCODE_DEFAULT_CDP_CONNECT_TIMEOUT_MS = 30_000
 BCODE_TOOL_OUTPUT_MAX_LINES = 600
 BCODE_TOOL_OUTPUT_MAX_BYTES = 24_000
 
@@ -482,6 +484,10 @@ class Agent:
 				BCODE_BROWSER_EXECUTE_MAX_TIMEOUT_ENV,
 				str(BCODE_DEFAULT_BROWSER_EXECUTE_MAX_TIMEOUT_MS),
 			)
+			env['BCODE_CDP_CONNECT_TIMEOUT_MS'] = os.environ.get(
+				BCODE_CDP_CONNECT_TIMEOUT_ENV,
+				str(BCODE_DEFAULT_CDP_CONNECT_TIMEOUT_MS),
+			)
 		if screenshot_dir is not None:
 			env['BCODE_SCREENSHOT_DIR'] = str(screenshot_dir)
 		return env
@@ -758,7 +764,14 @@ def _browser_use_instruction_lines(
 	allowed_domains: Any,
 	blocked_domains: Any,
 ) -> list[str]:
-	lines: list[str] = []
+	lines: list[str] = [
+		'# Browser Use run contract',
+		'Complete the user task autonomously. Do not ask follow-up questions or offer next-step options in the final answer.',
+		'When details are underspecified, make a reasonable assumption, state it briefly, and continue.',
+		'If a source is blocked or unavailable, use the best available official or directly relevant alternative and clearly mark any uncertainty.',
+		'Return the requested answer format as completely as possible within the run budget.',
+		'',
+	]
 	if isinstance(override_system_message, str) and override_system_message.strip():
 		lines.extend(['# Browser Use system override', override_system_message.strip(), ''])
 	if isinstance(extend_system_message, str) and extend_system_message.strip():
