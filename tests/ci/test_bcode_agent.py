@@ -4,6 +4,7 @@ import base64
 import json
 
 import pytest
+from pydantic import BaseModel
 
 from browser_use.bcode import Agent, BcodeNotInstalledError
 
@@ -28,6 +29,11 @@ class _NavigatingBrowser(_Browser):
 
 	async def navigate_to(self, url: str, new_tab: bool = False):
 		self.navigations.append((url, new_tab))
+
+
+class _Receipt(BaseModel):
+	title: str
+	total: float
 
 
 def test_model_id_includes_bcode_provider_prefix():
@@ -199,3 +205,51 @@ if sys.argv[1] == "export":
 	).run()
 
 	assert browser.navigations == [('https://example.com', False)]
+
+
+@pytest.mark.asyncio
+async def test_bcode_agent_writes_browser_use_context_and_attaches_available_files(tmp_path, monkeypatch):
+	fake = tmp_path / 'bcode'
+	attachment = tmp_path / 'receipt.txt'
+	capture = tmp_path / 'capture.json'
+	attachment.write_text('receipt content')
+	fake.write_text(
+		"""#!/usr/bin/env python3
+import json, os, pathlib, sys
+capture = pathlib.Path(os.environ["BCODE_FAKE_CAPTURE"])
+if sys.argv[1] == "run":
+    config = pathlib.Path.cwd() / ".bcode" / "bcode.json"
+    data = json.loads(config.read_text())
+    instructions = pathlib.Path(data["instructions"][0]).read_text()
+    capture.write_text(json.dumps({"argv": sys.argv, "config": data, "instructions": instructions}))
+    print(json.dumps({"type": "text", "timestamp": 1, "sessionID": "sess-context", "part": {"text": "{\\"title\\": \\"Example\\", \\"total\\": 12.5}"}}), flush=True)
+if sys.argv[1] == "export":
+    raise SystemExit(0)
+""",
+	)
+	fake.chmod(0o755)
+	monkeypatch.setenv('BROWSER_USE_BCODE_BINARY', str(fake))
+	monkeypatch.setenv('BCODE_FAKE_CAPTURE', str(capture))
+
+	result = await Agent(
+		task='Extract receipt',
+		llm=_llm_class('ChatOpenAI')(model='gpt-5.5'),
+		browser=_Browser(),
+		output_model_schema=_Receipt,
+		extend_system_message='Prefer concise answers.',
+		sensitive_data={'account': 'acct-123'},
+		available_file_paths=[str(attachment)],
+		allowed_domains=['example.com'],
+		blocked_domains=['ads.example.com'],
+		workspace_dir=tmp_path / 'workspace',
+	).run()
+
+	captured = json.loads(capture.read_text())
+	assert captured['config']['instructions']
+	assert 'Browser Use structured output' in captured['instructions']
+	assert 'Prefer concise answers.' in captured['instructions']
+	assert 'acct-123' in captured['instructions']
+	assert 'example.com' in captured['instructions']
+	assert '--file' in captured['argv']
+	assert str(attachment) in captured['argv']
+	assert result.final_output == _Receipt(title='Example', total=12.5)

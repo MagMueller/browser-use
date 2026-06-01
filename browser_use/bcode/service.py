@@ -181,6 +181,12 @@ class Agent:
 		ctor_max_steps = _unsupported.pop('max_steps', None) or _unsupported.pop('max_turns', None)
 		self._ctor_max_steps: int | None = int(ctor_max_steps) if ctor_max_steps else None
 		self.initial_actions = _unsupported.pop('initial_actions', None)
+		self.override_system_message = _unsupported.pop('override_system_message', None)
+		self.extend_system_message = _unsupported.pop('extend_system_message', None)
+		self.sensitive_data = _unsupported.pop('sensitive_data', None)
+		self.available_file_paths = list(_unsupported.pop('available_file_paths', None) or [])
+		self.allowed_domains = _unsupported.pop('allowed_domains', None)
+		self.blocked_domains = _unsupported.pop('blocked_domains', None)
 
 		self.provider = _provider_from_llm(llm)
 		self._model = _model_from_llm(llm)
@@ -281,7 +287,8 @@ class Agent:
 			bcode_dir = workspace / '.bcode'
 			bcode_dir.mkdir(parents=True, exist_ok=True)
 			screenshot_dir = bcode_dir / 'screenshots'
-			_write_bcode_config(bcode_dir / 'bcode.json', self._model_id())
+			instructions_file = self._write_browser_use_instructions(bcode_dir)
+			_write_bcode_config(bcode_dir / 'bcode.json', self._model_id(), instructions_file)
 
 			env = {**os.environ, **self._env_overrides(cdp_url, workspace, screenshot_dir=screenshot_dir)}
 			argv = self._argv(bcode_cmd, task, max_steps=max_steps)
@@ -378,8 +385,30 @@ class Agent:
 		if max_steps is not None:
 			task = f'[Browser Use run budget: max_steps={int(max_steps)}]\n\n{task}'
 		argv.extend(self.extra_args)
+		for file_path in self.available_file_paths:
+			path = Path(file_path).expanduser()
+			if path.exists():
+				argv.extend(['--file', str(path)])
+			else:
+				warnings.warn(f'browser_use.bcode.Agent available_file_paths entry does not exist: {path}', stacklevel=2)
 		argv.append(task)
 		return argv
+
+	def _write_browser_use_instructions(self, bcode_dir: Path) -> Path | None:
+		lines = _browser_use_instruction_lines(
+			output_model=self.output_model,
+			override_system_message=self.override_system_message,
+			extend_system_message=self.extend_system_message,
+			sensitive_data=self.sensitive_data,
+			available_file_paths=self.available_file_paths,
+			allowed_domains=self.allowed_domains,
+			blocked_domains=self.blocked_domains,
+		)
+		if not lines:
+			return None
+		path = bcode_dir / 'browser-use-instructions.md'
+		path.write_text('\n'.join(lines).strip() + '\n')
+		return path
 
 	def _model_id(self) -> str:
 		model = self._model or 'gpt-5.5'
@@ -652,14 +681,72 @@ async def _maybe_call(fn: Any | None, *args: Any) -> None:
 		await value
 
 
-def _write_bcode_config(path: Path, model_id: str) -> None:
+def _write_bcode_config(path: Path, model_id: str, instructions_file: Path | None = None) -> None:
 	payload = {
 		'model': model_id,
 		'share': 'disabled',
 		'autoupdate': False,
 		'snapshot': False,
 	}
+	if instructions_file is not None:
+		payload['instructions'] = [str(instructions_file)]
 	path.write_text(json.dumps(payload, indent=2) + '\n')
+
+
+def _browser_use_instruction_lines(
+	*,
+	output_model: type[BaseModel] | None,
+	override_system_message: Any,
+	extend_system_message: Any,
+	sensitive_data: Any,
+	available_file_paths: list[Any],
+	allowed_domains: Any,
+	blocked_domains: Any,
+) -> list[str]:
+	lines: list[str] = []
+	if isinstance(override_system_message, str) and override_system_message.strip():
+		lines.extend(['# Browser Use system override', override_system_message.strip(), ''])
+	if isinstance(extend_system_message, str) and extend_system_message.strip():
+		lines.extend(['# Browser Use additional system message', extend_system_message.strip(), ''])
+	if output_model is not None:
+		lines.extend(
+			[
+				'# Browser Use structured output',
+				'When producing the final answer, output JSON matching this schema and no surrounding prose:',
+				json.dumps(output_model.model_json_schema(), indent=2, sort_keys=True),
+				'',
+			]
+		)
+	if sensitive_data:
+		lines.extend(
+			[
+				'# Browser Use sensitive data',
+				'Use these sensitive values only when needed for the task. Do not reveal them in the final answer unless explicitly requested.',
+				_json_or_text(sensitive_data),
+				'',
+			]
+		)
+	if available_file_paths:
+		lines.extend(
+			[
+				'# Browser Use available files',
+				'The Browser Use caller made these files available for this run. They are attached to the Bcode prompt when they exist:',
+				_json_or_text([str(Path(path).expanduser()) for path in available_file_paths]),
+				'',
+			]
+		)
+	if allowed_domains:
+		lines.extend(['# Browser Use allowed domains', _json_or_text(allowed_domains), ''])
+	if blocked_domains:
+		lines.extend(['# Browser Use blocked domains', _json_or_text(blocked_domains), ''])
+	return lines
+
+
+def _json_or_text(value: Any) -> str:
+	try:
+		return json.dumps(value, indent=2, sort_keys=True, default=str)
+	except TypeError:
+		return str(value)
 
 
 def _parse_json_line(line: bytes) -> dict[str, Any] | None:
