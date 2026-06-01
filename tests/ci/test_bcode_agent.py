@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import json
 
 import pytest
@@ -62,8 +63,11 @@ async def test_bcode_agent_parses_json_stream_and_returns_history(tmp_path, monk
 		"""#!/usr/bin/env python3
 import json, os, sys
 capture = os.environ["BCODE_FAKE_CAPTURE"]
-with open(capture, "w") as f:
-    json.dump({"argv": sys.argv, "BU_CDP_WS": os.environ.get("BU_CDP_WS"), "cwd": os.getcwd()}, f)
+if sys.argv[1] == "run":
+    with open(capture, "w") as f:
+        json.dump({"argv": sys.argv, "BU_CDP_WS": os.environ.get("BU_CDP_WS"), "cwd": os.getcwd()}, f)
+if sys.argv[1] == "export":
+    raise SystemExit(0)
 session = "sess-bcode"
 events = [
     {"type": "step_start", "timestamp": 1, "sessionID": session, "part": {"id": "s1"}},
@@ -97,3 +101,66 @@ for event in events:
 	assert captured['BU_CDP_WS'] == _Browser.cdp_url
 	assert captured['argv'][1:5] == ['run', '--format', 'json', '--dangerously-skip-permissions']
 	assert '--model' in captured['argv']
+
+
+@pytest.mark.asyncio
+async def test_bcode_agent_enriches_result_from_export_transcript(tmp_path, monkeypatch):
+	fake = tmp_path / 'bcode'
+	png_b64 = base64.b64encode(b'fake-png').decode()
+	fake.write_text(
+		f"""#!/usr/bin/env python3
+import json, sys
+if sys.argv[1] == "run":
+    print(json.dumps({{"type": "step_start", "timestamp": 1, "sessionID": "sess-export", "part": {{"id": "s1"}}}}), flush=True)
+    raise SystemExit(0)
+if sys.argv[1] == "export":
+    print(json.dumps({{
+        "info": {{
+            "id": "sess-export",
+            "cost": 0.25,
+            "tokens": {{"input": 12, "output": 7, "reasoning": 0, "cache": {{"read": 0, "write": 0}}}}
+        }},
+        "messages": [{{
+            "info": {{
+                "role": "assistant",
+                "providerID": "openai",
+                "modelID": "gpt-5.5",
+                "cost": 0.25,
+                "tokens": {{"input": 12, "output": 7, "reasoning": 0, "cache": {{"read": 0, "write": 0}}}}
+            }},
+            "parts": [
+                {{"type": "step-start", "id": "prt-start"}},
+                {{"type": "tool", "id": "prt-tool", "tool": "browser_execute", "state": {{
+                    "status": "completed",
+                    "input": {{"code": "await session.Page.captureScreenshot({{format: 'png'}})"}},
+                    "output": "saw page",
+                    "title": "browser_execute",
+                    "metadata": {{}},
+                    "time": {{"start": 1000, "end": 1500}},
+                    "attachments": [{{"type": "file", "mime": "image/png", "url": "data:image/png;base64,{png_b64}"}}]
+                }}}},
+                {{"type": "text", "id": "prt-text", "text": "Exported final answer"}},
+                {{"type": "step-finish", "id": "prt-finish", "cost": 0.25, "tokens": {{"input": 12, "output": 7, "reasoning": 0, "cache": {{"read": 0, "write": 0}}}}}}
+            ]
+        }}]
+    }}))
+""",
+	)
+	fake.chmod(0o755)
+	monkeypatch.setenv('BROWSER_USE_BCODE_BINARY', str(fake))
+
+	result = await Agent(
+		task='Use a browser',
+		llm=_llm_class('ChatOpenAI')(model='gpt-5.5'),
+		browser=_Browser(),
+		workspace_dir=tmp_path / 'workspace',
+	).run()
+
+	assert result.final_result() == 'Exported final answer'
+	assert result.usage.input_tokens == 12
+	assert result.usage.output_tokens == 7
+	assert result.usage.cost == 0.25
+	assert result.steps[0].tool == 'browser_execute'
+	assert result.steps[0].tool_output['output'] == 'saw page'
+	assert result.steps[0].screenshot_paths
+	assert result.history[0].state.get_screenshot() == png_b64

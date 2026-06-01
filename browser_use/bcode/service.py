@@ -9,6 +9,7 @@ owns the inner agent/tool loop and attaches to the browser over CDP.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import json
 import os
@@ -277,9 +278,10 @@ class Agent:
 
 			bcode_dir = workspace / '.bcode'
 			bcode_dir.mkdir(parents=True, exist_ok=True)
+			screenshot_dir = bcode_dir / 'screenshots'
 			_write_bcode_config(bcode_dir / 'bcode.json', self._model_id())
 
-			env = {**os.environ, **self._env_overrides(cdp_url, workspace)}
+			env = {**os.environ, **self._env_overrides(cdp_url, workspace, screenshot_dir=screenshot_dir)}
 			argv = self._argv(bcode_cmd, task, max_steps=max_steps)
 
 			proc = await asyncio.create_subprocess_exec(
@@ -327,6 +329,16 @@ class Agent:
 				if proc.stderr is not None:
 					stderr_blob = await proc.stderr.read()
 
+			export_data: dict[str, Any] | None = None
+			export_usage: _UsageView | None = None
+			if self.session_id:
+				export_data = await _export_session(bcode_cmd, self.session_id, workspace, env)
+				if export_data:
+					export_steps, export_summary, export_usage = _steps_from_export(export_data, screenshot_dir)
+					if export_steps:
+						steps = export_steps
+					final_summary = export_summary or final_summary
+
 			result = AgentRunResult(
 				session_id=self.session_id,
 				exit_code=exit_code,
@@ -339,8 +351,8 @@ class Agent:
 			)
 			if self.output_model is not None and final_summary:
 				result.final_output = _parse_output_model(self.output_model, final_summary)
-			usage = _UsageView()
-			usage.model = self._model_id()
+			usage = export_usage if export_usage is not None else _UsageView()
+			usage.model = usage.model or self._model_id()
 			object.__setattr__(result, '_usage_cache', usage)
 			return result
 		finally:
@@ -373,7 +385,13 @@ class Agent:
 			return model
 		return f'{self.provider}/{model}'
 
-	def _env_overrides(self, cdp_url: str | None = None, workspace: Path | None = None) -> dict[str, str]:
+	def _env_overrides(
+		self,
+		cdp_url: str | None = None,
+		workspace: Path | None = None,
+		*,
+		screenshot_dir: Path | None = None,
+	) -> dict[str, str]:
 		env: dict[str, str] = {}
 		if self._api_key:
 			env[_PROVIDER_API_KEY_ENV.get(self.provider, 'OPENAI_API_KEY')] = self._api_key
@@ -390,6 +408,8 @@ class Agent:
 			env['OPENCODE_DISABLE_AUTOUPDATE'] = '1'
 			env['OPENCODE_DISABLE_PROJECT_CONFIG'] = '0'
 			env['OPENCODE_DISABLE_PRUNE'] = '1'
+		if screenshot_dir is not None:
+			env['BCODE_SCREENSHOT_DIR'] = str(screenshot_dir)
 		return env
 
 	async def _emit(self, event: dict[str, Any]) -> None:
@@ -456,6 +476,170 @@ async def _apply_bcode_event(
 		return None, str(error)
 
 	return None, None
+
+
+async def _export_session(
+	bcode_cmd: list[str],
+	session_id: str,
+	workspace: Path,
+	env: dict[str, str],
+) -> dict[str, Any] | None:
+	proc = await asyncio.create_subprocess_exec(
+		*bcode_cmd,
+		'export',
+		session_id,
+		stdout=asyncio.subprocess.PIPE,
+		stderr=asyncio.subprocess.PIPE,
+		cwd=str(workspace),
+		env=env,
+	)
+	stdout, _stderr = await proc.communicate()
+	if proc.returncode != 0 or not stdout:
+		return None
+	try:
+		data = json.loads(stdout.decode(errors='replace'))
+	except json.JSONDecodeError:
+		return None
+	return data if isinstance(data, dict) else None
+
+
+def _steps_from_export(data: dict[str, Any], screenshot_dir: Path) -> tuple[list[StepRecord], str | None, _UsageView | None]:
+	steps: list[StepRecord] = []
+	final_summary: str | None = None
+	usage = _usage_from_export(data)
+	for msg in data.get('messages') or []:
+		if not isinstance(msg, dict):
+			continue
+		info = msg.get('info') if isinstance(msg.get('info'), dict) else {}
+		parts = msg.get('parts') if isinstance(msg.get('parts'), list) else []
+		if info.get('role') != 'assistant':
+			continue
+		message_text_parts: list[str] = []
+		current: StepRecord | None = None
+		for part in parts:
+			if not isinstance(part, dict):
+				continue
+			part_type = part.get('type')
+			if part_type == 'step-start':
+				current = StepRecord(seq=len(steps) + 1)
+				steps.append(current)
+				continue
+			if current is None:
+				current = StepRecord(seq=len(steps) + 1)
+				steps.append(current)
+			if part_type == 'text':
+				text = part.get('text')
+				if isinstance(text, str) and text.strip():
+					message_text_parts.append(text)
+					current.model_text = (current.model_text + '\n' + text).strip() if current.model_text else text
+				continue
+			if part_type == 'tool':
+				_apply_export_tool_part(current, part, screenshot_dir)
+				continue
+			if part_type == 'step-finish':
+				_apply_export_step_finish(current, part)
+				continue
+		if message_text_parts:
+			final_summary = '\n'.join(message_text_parts).strip()
+		if isinstance(info.get('structured'), (dict, list)):
+			final_summary = json.dumps(info['structured'])
+	return steps, final_summary, usage
+
+
+def _apply_export_tool_part(step: StepRecord, part: dict[str, Any], screenshot_dir: Path) -> None:
+	state = part.get('state') if isinstance(part.get('state'), dict) else {}
+	step.tool = str(part.get('tool') or '')
+	input_data = state.get('input')
+	if isinstance(input_data, dict):
+		step.tool_input = input_data
+	output: dict[str, Any] = {
+		'status': state.get('status'),
+		'title': state.get('title'),
+		'output': state.get('output'),
+		'error': state.get('error'),
+		'attachments': state.get('attachments'),
+		'metadata': state.get('metadata'),
+	}
+	step.tool_output = {k: v for k, v in output.items() if v is not None}
+	time_info = state.get('time') if isinstance(state.get('time'), dict) else {}
+	if isinstance(time_info.get('start'), int):
+		step.started_ts_ms = time_info['start']
+	if isinstance(time_info.get('end'), int):
+		step.finished_ts_ms = time_info['end']
+	for idx, attachment in enumerate(state.get('attachments') or []):
+		if not isinstance(attachment, dict):
+			continue
+		path = _materialize_attachment(attachment, screenshot_dir, f'{part.get("id") or step.seq}-{idx}')
+		if path:
+			step.screenshot_paths.append(path)
+
+
+def _apply_export_step_finish(step: StepRecord, part: dict[str, Any]) -> None:
+	tokens = part.get('tokens') if isinstance(part.get('tokens'), dict) else {}
+	input_tokens = tokens.get('input')
+	if isinstance(input_tokens, (int, float)):
+		step.input_tokens = int(input_tokens)
+
+
+def _usage_from_export(data: dict[str, Any]) -> _UsageView | None:
+	info = data.get('info') if isinstance(data.get('info'), dict) else {}
+	usage = _UsageView()
+	tokens = info.get('tokens') if isinstance(info.get('tokens'), dict) else {}
+	if tokens:
+		usage.input_tokens = int(tokens.get('input') or 0)
+		usage.output_tokens = int(tokens.get('output') or 0)
+	cost = info.get('cost')
+	if isinstance(cost, (int, float)):
+		usage.cost = float(cost)
+	if usage.input_tokens or usage.output_tokens or usage.cost:
+		return usage
+
+	for msg in data.get('messages') or []:
+		if not isinstance(msg, dict):
+			continue
+		msg_info = msg.get('info') if isinstance(msg.get('info'), dict) else {}
+		if msg_info.get('role') != 'assistant':
+			continue
+		msg_tokens = msg_info.get('tokens') if isinstance(msg_info.get('tokens'), dict) else {}
+		usage.input_tokens += int(msg_tokens.get('input') or 0)
+		usage.output_tokens += int(msg_tokens.get('output') or 0)
+		msg_cost = msg_info.get('cost')
+		if isinstance(msg_cost, (int, float)):
+			usage.cost += float(msg_cost)
+		if isinstance(msg_info.get('modelID'), str) and isinstance(msg_info.get('providerID'), str):
+			usage.model = f'{msg_info["providerID"]}/{msg_info["modelID"]}'
+	return usage if usage.input_tokens or usage.output_tokens or usage.cost else None
+
+
+def _materialize_attachment(attachment: dict[str, Any], screenshot_dir: Path, name_hint: str) -> str | None:
+	mime = attachment.get('mime')
+	url = attachment.get('url')
+	if not (isinstance(mime, str) and mime.startswith('image/') and isinstance(url, str)):
+		return None
+	if url.startswith('data:'):
+		prefix, sep, payload = url.partition(',')
+		if not sep or ';base64' not in prefix:
+			return None
+		ext = {
+			'image/png': 'png',
+			'image/jpeg': 'jpg',
+			'image/webp': 'webp',
+		}.get(mime, 'img')
+		try:
+			raw = base64.b64decode(payload, validate=True)
+		except Exception:
+			return None
+		screenshot_dir.mkdir(parents=True, exist_ok=True)
+		path = screenshot_dir / f'{_safe_filename(name_hint)}.{ext}'
+		path.write_bytes(raw)
+		return str(path)
+	if url.startswith('file://'):
+		return url.removeprefix('file://')
+	return None
+
+
+def _safe_filename(value: str) -> str:
+	return ''.join(c if c.isalnum() or c in '-_.' else '-' for c in value)[:80] or 'attachment'
 
 
 async def _maybe_call(fn: Any | None, *args: Any) -> None:
