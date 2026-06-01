@@ -37,6 +37,7 @@ def test_cdp_and_provider_key_are_forwarded_to_bcode_env(tmp_path):
 
 def test_missing_bcode_binary_raises(monkeypatch):
 	monkeypatch.delenv('BROWSER_USE_BCODE_BINARY', raising=False)
+	monkeypatch.delenv('BROWSER_USE_BCODE_COMMAND', raising=False)
 	monkeypatch.delenv('BCODE_BINARY', raising=False)
 	monkeypatch.delenv('BCODE_BIN_PATH', raising=False)
 	monkeypatch.setenv('PATH', '')
@@ -44,6 +45,13 @@ def test_missing_bcode_binary_raises(monkeypatch):
 		from browser_use.bcode.service import find_bcode_binary
 
 		find_bcode_binary()
+
+
+def test_command_override_supports_source_checkout(monkeypatch):
+	monkeypatch.setenv('BROWSER_USE_BCODE_COMMAND', 'bun run --cwd /repo/packages/opencode --conditions=browser ./src/index.ts')
+	from browser_use.bcode.service import _bcode_command
+
+	assert _bcode_command() == ['bun', 'run', '--cwd', '/repo/packages/opencode', '--conditions=browser', './src/index.ts']
 
 
 @pytest.mark.asyncio

@@ -12,6 +12,7 @@ import asyncio
 import contextlib
 import json
 import os
+import shlex
 import shutil
 import tempfile
 import time
@@ -26,6 +27,7 @@ from browser_use.bcode.views import AgentRunResult, StepRecord
 from browser_use.rust.views import _UsageView
 
 BCODE_BINARY_ENV = 'BROWSER_USE_BCODE_BINARY'
+BCODE_COMMAND_ENV = 'BROWSER_USE_BCODE_COMMAND'
 BCODE_LEGACY_BINARY_ENVS = ('BCODE_BINARY', 'BCODE_BIN_PATH')
 
 
@@ -132,7 +134,20 @@ def find_bcode_binary() -> Path:
 	if found:
 		return Path(found)
 
-	raise BcodeNotInstalledError('Bcode CLI not found. Install `bcode` or set BROWSER_USE_BCODE_BINARY to the executable path.')
+	raise BcodeNotInstalledError(
+		'Bcode CLI not found. Install `bcode`, set BROWSER_USE_BCODE_BINARY to the executable path, '
+		'or set BROWSER_USE_BCODE_COMMAND to a full command.'
+	)
+
+
+def _bcode_command() -> list[str]:
+	command = os.environ.get(BCODE_COMMAND_ENV)
+	if command:
+		argv = shlex.split(command)
+		if argv:
+			return argv
+		raise BcodeNotInstalledError(f'{BCODE_COMMAND_ENV} is empty after shell parsing.')
+	return [str(find_bcode_binary())]
 
 
 class Agent:
@@ -232,7 +247,7 @@ class Agent:
 		on_step_start: Any | None,
 		on_step_end: Any | None,
 	) -> AgentRunResult:
-		cli = find_bcode_binary()
+		bcode_cmd = _bcode_command()
 		started = time.monotonic()
 		steps: list[StepRecord] = []
 		stderr_blob = b''
@@ -265,7 +280,7 @@ class Agent:
 			_write_bcode_config(bcode_dir / 'bcode.json', self._model_id())
 
 			env = {**os.environ, **self._env_overrides(cdp_url, workspace)}
-			argv = self._argv(cli, task, max_steps=max_steps)
+			argv = self._argv(bcode_cmd, task, max_steps=max_steps)
 
 			proc = await asyncio.create_subprocess_exec(
 				*argv,
@@ -336,9 +351,9 @@ class Agent:
 			if workspace_cm is not None:
 				workspace_cm.cleanup()
 
-	def _argv(self, cli: Path, task: str, *, max_steps: int | None) -> list[str]:
+	def _argv(self, bcode_cmd: list[str], task: str, *, max_steps: int | None) -> list[str]:
 		argv = [
-			str(cli),
+			*bcode_cmd,
 			'run',
 			'--format',
 			'json',
