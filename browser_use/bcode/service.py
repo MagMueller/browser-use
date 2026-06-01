@@ -312,24 +312,37 @@ class Agent:
 			async def read_stdout() -> None:
 				nonlocal final_summary, failure
 				assert proc.stdout is not None
+				buffer = b''
 				while True:
-					line = await proc.stdout.readline()
-					if not line:
+					chunk = await proc.stdout.read(8192)
+					if not chunk:
 						break
-					event = _parse_json_line(line)
-					if event is None:
-						continue
-					await self._emit(event)
-					next_summary, next_failure = await _apply_bcode_event(
-						event,
-						steps,
-						on_step_start=on_step_start,
-						on_step_end=on_step_end,
-					)
-					final_summary = next_summary or final_summary
-					failure = next_failure or failure
-					if event.get('sessionID') and not self.session_id:
-						self.session_id = str(event['sessionID'])
+					buffer += chunk
+					while b'\n' in buffer:
+						line, buffer = buffer.split(b'\n', 1)
+						await apply_stdout_line(line)
+					if len(buffer) > 100_000_000:
+						failure = 'Bcode emitted a JSONL stdout event larger than 100MB.'
+						buffer = b''
+				if buffer.strip():
+					await apply_stdout_line(buffer)
+
+			async def apply_stdout_line(line: bytes) -> None:
+				nonlocal final_summary, failure
+				event = _parse_json_line(line)
+				if event is None:
+					return
+				await self._emit(event)
+				next_summary, next_failure = await _apply_bcode_event(
+					event,
+					steps,
+					on_step_start=on_step_start,
+					on_step_end=on_step_end,
+				)
+				final_summary = next_summary or final_summary
+				failure = next_failure or failure
+				if event.get('sessionID') and not self.session_id:
+					self.session_id = str(event['sessionID'])
 
 			async def read_stderr() -> None:
 				assert proc.stderr is not None
@@ -351,9 +364,14 @@ class Agent:
 			except asyncio.TimeoutError:
 				await self.cancel()
 				exit_code = 124
+			except asyncio.CancelledError:
+				await self.cancel()
+				raise
 			finally:
-				await stdout_task
-				await stderr_task
+				with contextlib.suppress(Exception):
+					await stdout_task
+				with contextlib.suppress(Exception):
+					await stderr_task
 
 			export_data: dict[str, Any] | None = None
 			export_usage: _UsageView | None = None

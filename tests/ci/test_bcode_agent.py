@@ -263,3 +263,33 @@ if sys.argv[1] == "export":
 	assert '--file' in captured['argv']
 	assert str(attachment) in captured['argv']
 	assert result.final_output == _Receipt(title='Example', total=12.5)
+
+
+@pytest.mark.asyncio
+async def test_bcode_agent_parses_large_jsonl_events(tmp_path, monkeypatch):
+	fake = tmp_path / 'bcode'
+	large_output = 'x' * 70_000
+	fake.write_text(
+		"""#!/usr/bin/env python3
+import json, sys
+large_output = %(large_output)r
+if sys.argv[1] == "run":
+    print(json.dumps({"type": "tool_use", "timestamp": 1, "sessionID": "sess-large", "part": {"type": "tool", "tool": "browser_execute", "state": {"status": "completed", "input": {"code": "large"}, "output": large_output}}}), flush=True)
+    print(json.dumps({"type": "text", "timestamp": 2, "sessionID": "sess-large", "part": {"text": "done"}}), flush=True)
+if sys.argv[1] == "export":
+    raise SystemExit(0)
+"""
+		% {'large_output': large_output},
+	)
+	fake.chmod(0o755)
+	monkeypatch.setenv('BROWSER_USE_BCODE_BINARY', str(fake))
+
+	result = await Agent(
+		task='Handle a large event',
+		llm=_llm_class('ChatOpenAI')(model='gpt-5.5'),
+		browser=_Browser(),
+		workspace_dir=tmp_path / 'workspace',
+	).run()
+
+	assert result.final_result() == 'done'
+	assert result.action_results()[0]['output'] == large_output
