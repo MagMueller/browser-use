@@ -293,3 +293,5 @@ if sys.argv[1] == "export":
 
 	assert result.final_result() == 'done'
 	assert result.action_results()[0]['output'] == large_output
+	assert result.history[0].result[0].extracted_content.endswith('...[truncated for history view]...')
+	assert len(result.history[0].result[0].extracted_content) <= 8000

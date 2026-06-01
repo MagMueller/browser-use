@@ -313,14 +313,17 @@ class _ActionResultView:
 			or data.get('outputs')
 			or data.get('data')
 		)
-		# Stringify dict/list outputs so the judge / dashboard sees structure
-		# instead of repr(<dict>).
-		if self.extracted_content is not None and not isinstance(self.extracted_content, str):
+		# Keep the legacy history view bounded. Raw payloads remain available
+		# through AgentRunResult.action_results() for callers that need them.
+		if isinstance(self.extracted_content, str):
+			self.extracted_content = _truncate_extracted_content(self.extracted_content)
+		elif self.extracted_content is not None:
 			try:
 				import json as _json
-				self.extracted_content = _json.dumps(self.extracted_content)[:8000]
+
+				self.extracted_content = _truncate_extracted_content(_json.dumps(self.extracted_content))
 			except Exception:
-				self.extracted_content = str(self.extracted_content)[:8000]
+				self.extracted_content = _truncate_extracted_content(str(self.extracted_content))
 		self.error = data.get('error') or data.get('failure')
 		self.is_done = bool(data.get('is_done', is_done))
 		self.success = data.get('success')
@@ -351,6 +354,12 @@ class _StateView:
 
 	def model_dump(self) -> dict[str, Any]:
 		return {'url': self.url, 'title': self.title}
+
+
+def _truncate_extracted_content(value: str, limit: int = 8000) -> str:
+	if len(value) <= limit:
+		return value
+	return value[: limit - 35].rstrip() + '\n...[truncated for history view]...'
 
 
 def _compact_tool_input(tool: str | None, tool_input: dict[str, Any] | None) -> dict[str, Any] | None:
