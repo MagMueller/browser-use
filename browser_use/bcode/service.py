@@ -260,6 +260,69 @@ class Agent:
 			return self.result.usage
 		return _UsageView()
 
+	async def _judge_and_log(self) -> None:
+		"""Run Browser Use's ComprehensiveV1 judge and store the verdict.
+
+		The eval harness calls this method directly for local Browser Use agents.
+		Expose the same compatibility hook as `browser_use.rust.Agent` so Bcode
+		runs can be judged and saved through the standard pipeline.
+		"""
+		result = self.result
+		if result is None or result.exit_code != 0:
+			return
+
+		try:
+			from browser_use.agent.judge import construct_judge_messages
+			from browser_use.agent.views import JudgementResult
+		except Exception:
+			return
+
+		llm = _resolve_judge_llm()
+		if llm is None:
+			import logging
+
+			logging.getLogger('browser_use.bcode.Agent').warning(
+				'Judge LLM unavailable (no GEMINI_API_KEY / GOOGLE_API_KEY and no OPENAI_API_KEY) — skipping ComprehensiveV1 judge.'
+			)
+			return
+
+		task = self.task or ''
+		final_result = result.final_result() or ''
+		agent_steps: list[str] = []
+		for step in result.steps:
+			tool = step.tool or '?'
+			arg_keys = ','.join(sorted((step.tool_input or {}).keys()))
+			out_keys = ','.join(sorted((step.tool_output or {}).keys()))
+			agent_steps.append(f'{tool}(args={arg_keys}) -> ({out_keys})')
+
+		screenshot_paths = [p for s in result.steps for p in s.screenshot_paths if p]
+
+		try:
+			messages = construct_judge_messages(
+				task=task,
+				final_result=final_result,
+				agent_steps=agent_steps,
+				screenshot_paths=screenshot_paths,
+				max_images=10,
+				ground_truth=None,
+				use_vision=True,
+			)
+			response = await llm.ainvoke(messages, output_format=JudgementResult)
+			judgement: JudgementResult = response.completion  # type: ignore[assignment]
+		except Exception as exc:
+			import logging
+
+			logging.getLogger('browser_use.bcode.Agent').warning('Judge LLM call failed: %s', exc, exc_info=True)
+			return
+
+		result.judgement_dict = {
+			'verdict': bool(judgement.verdict),
+			'reasoning': judgement.reasoning or '',
+			'failure_reason': judgement.failure_reason or '',
+			'impossible_task': bool(judgement.impossible_task),
+			'reached_captcha': bool(judgement.reached_captcha),
+		}
+
 	async def _run_headless(
 		self,
 		task: str,
@@ -924,6 +987,27 @@ def _api_key_from_llm(llm: Any) -> str | None:
 
 def _browser_cdp_url(browser: Any) -> str | None:
 	return _read_browser_attr(browser, ('cdp_url', 'wss_url'))
+
+
+def _resolve_judge_llm() -> Any | None:
+	"""Pick a cheap, independent judge LLM. Mirrors the Rust wrapper."""
+	if os.environ.get('GEMINI_API_KEY') or os.environ.get('GOOGLE_API_KEY'):
+		try:
+			from browser_use.llm.google.chat import ChatGoogle
+
+			return ChatGoogle(model='gemini-3-flash-preview')
+		except Exception:
+			pass
+
+	if os.environ.get('OPENAI_API_KEY'):
+		try:
+			from browser_use.llm.openai.chat import ChatOpenAI
+
+			return ChatOpenAI(model='gpt-4o-mini')
+		except Exception:
+			pass
+
+	return None
 
 
 def _read_browser_attr(browser: Any, attr_names: tuple[str, ...]) -> Any:

@@ -65,6 +65,47 @@ def test_browser_execute_timeout_cap_can_be_overridden(tmp_path, monkeypatch):
 	assert env['BCODE_CDP_CONNECT_TIMEOUT_MS'] == '9000'
 
 
+@pytest.mark.asyncio
+async def test_bcode_agent_judge_hook_stashes_verdict(monkeypatch):
+	from browser_use.bcode import service as bcode_service
+	from browser_use.bcode.views import AgentRunResult, StepRecord
+
+	class _FakeJudgement:
+		verdict = True
+		reasoning = 'ok'
+		failure_reason = ''
+		impossible_task = False
+		reached_captcha = False
+
+	class _FakeResponse:
+		completion = _FakeJudgement()
+
+	class _FakeJudgeLLM:
+		async def ainvoke(self, messages, output_format=None):
+			assert messages
+			assert output_format is not None
+			return _FakeResponse()
+
+	monkeypatch.setattr(bcode_service, '_resolve_judge_llm', lambda: _FakeJudgeLLM())
+	agent = Agent(task='Do the thing')
+	agent.result = AgentRunResult(
+		exit_code=0,
+		final_summary='done',
+		steps=[StepRecord(seq=1, tool='browser_execute', tool_input={'code': 'x'}, tool_output={'result': 'done'})],
+	)
+
+	await agent._judge_and_log()
+
+	assert agent.result.is_judged() is True
+	assert agent.result.judgement() == {
+		'verdict': True,
+		'reasoning': 'ok',
+		'failure_reason': '',
+		'impossible_task': False,
+		'reached_captcha': False,
+	}
+
+
 def test_missing_bcode_binary_raises(monkeypatch):
 	monkeypatch.delenv('BROWSER_USE_BCODE_BINARY', raising=False)
 	monkeypatch.delenv('BROWSER_USE_BCODE_COMMAND', raising=False)
