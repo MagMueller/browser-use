@@ -53,6 +53,13 @@ def test_cdp_and_provider_key_are_forwarded_to_bcode_env(tmp_path):
 	assert env['BU_CDP_URL'] == _Browser.cdp_url
 	assert env['OPENAI_API_KEY'] == 'sk-test'
 	assert env['OPENCODE_CONFIG_DIR'] == str(tmp_path / '.bcode')
+	assert env['BCODE_BROWSER_EXECUTE_MAX_TIMEOUT_MS'] == '45000'
+
+
+def test_browser_execute_timeout_cap_can_be_overridden(tmp_path, monkeypatch):
+	monkeypatch.setenv('BROWSER_USE_BCODE_BROWSER_EXECUTE_MAX_TIMEOUT_MS', '12000')
+	env = Agent(task='x', browser=_Browser())._env_overrides(_Browser.cdp_url, tmp_path)
+	assert env['BCODE_BROWSER_EXECUTE_MAX_TIMEOUT_MS'] == '12000'
 
 
 def test_missing_bcode_binary_raises(monkeypatch):
