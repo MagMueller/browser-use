@@ -260,7 +260,7 @@ This branch keeps the Python `Agent` unchanged unless callers explicitly import
 
 ## Known Transitional Debt
 
-- `_LegacyProcessSdkClient` exists only to keep older `_run_process` monkeypatch tests
-  meaningful while the production path moves to the SDK server. Once evals prove the
-  SDK path and tests are rewritten around the protocol, the old CLI argv/load-events
-  glue should be removed and `browser_use/rust/service.py` should become much shorter.
+- The production Rust path no longer uses `_run_process`/`_load_events` or a legacy
+  process-backed SDK adapter. Those helper methods remain only for older unit tests
+  and should be deleted as the test suite is rewritten around the SDK server
+  protocol, making `browser_use/rust/service.py` much shorter.
