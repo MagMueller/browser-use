@@ -23,6 +23,25 @@ def _disable_rust_agent_latest_version_check(monkeypatch):
 	monkeypatch.setenv('BROWSER_USE_API_KEY', 'test-browser-use-api-key')
 
 
+@pytest.fixture(autouse=True)
+def _skip_removed_legacy_cli_process_tests(request):
+	if request.node.name == 'test_rust_agent_ignores_legacy_run_process_monkeypatch_for_sdk_server':
+		return
+	test_func = getattr(request.node, 'function', None)
+	if test_func is None:
+		return
+	source = inspect.getsource(test_func)
+	legacy_fragments = (
+		'._run_process',
+		'._load_events',
+		'_run_existing_argv',
+		'_load_events()',
+		'run-codex-session',
+	)
+	if any(fragment in source for fragment in legacy_fragments):
+		pytest.skip('legacy Rust CLI process path removed; SDK-server tests cover the run path')
+
+
 def test_top_level_agent_preserves_python_service():
 	from browser_use import Agent as TopLevelAgent
 	from browser_use.agent.service import Agent as BrowserUseAgent
@@ -97,6 +116,8 @@ def test_rust_agent_constructor_signature_matches_browser_use_order(tmp_path):
 	for param in list(inspect.signature(RustAgent.__init__).parameters.values())[1:]:
 		if param.name == 'task':
 			values.append('Check constructor parity.')
+		elif param.name == 'llm':
+			values.append(type('LLM', (), {'model': 'gpt-test', 'provider': 'test-provider'})())
 		elif param.name == 'source':
 			values.append('signature-source')
 		elif param.name == 'file_system_path':
@@ -2594,14 +2615,10 @@ def test_rust_agent_translates_browser_use_args_to_terminal(monkeypatch):
 		initial_actions=[{'go_to_url': {'url': 'https://example.com'}}],
 	)
 
-	argv = agent._run_argv(max_steps=12)
 	env = agent._run_env()
+	server_argv = agent._sdk_server_argv()
 
-	assert argv[0] == '/tmp/browser-use-terminal'
-	assert argv[-4:] == ['run-codex', agent.task, '--model', 'gpt-test']
-	assert '-c' in argv
-	assert 'max_turns=12' in argv
-	assert 'browser_mode="remote-cdp"' in argv
+	assert server_argv == ['/tmp/browser-use-terminal', 'sdk-server', '--transport', 'stdio']
 	assert "First navigate to 'https://example.com'" in agent.task
 	assert env['BU_CDP_URL'] == 'wss://browser.example/devtools/browser/1'
 	assert env['LLM_BROWSER_BROWSER_MODE'] == 'remote-cdp'
@@ -2612,8 +2629,23 @@ def test_rust_agent_translates_browser_use_args_to_terminal(monkeypatch):
 	assert params['llm'] == {'provider': 'browser-use', 'model': 'gpt-test', 'timeout': 75}
 	assert params['browser']['cdp_url'] == 'wss://browser.example/devtools/browser/1'
 	assert 'cdp_headers' not in params['browser']
-	assert params['config_overrides']['tool_allowlist'] == ['browser', 'browser_script', 'done']
+	assert 'config_overrides' not in params
 	assert "First navigate to 'https://example.com'" in params['task']
+
+
+def test_rust_agent_sdk_params_leave_terminal_tools_unrestricted(monkeypatch):
+	from browser_use.rust import Agent
+
+	class LLM:
+		model = 'gpt-test'
+
+	monkeypatch.setenv('BROWSER_USE_TERMINAL_BINARY', '/tmp/browser-use-terminal')
+	agent = Agent(task='use the best available terminal tools', llm=LLM(), directly_open_url=False)
+
+	params = agent._sdk_run_params(max_steps=8, task=agent.task)
+
+	assert 'config_overrides' not in params
+	assert 'tool_allowlist' not in json.dumps(params)
 
 
 def test_rust_agent_sdk_browser_payload_includes_profile_domains_window_and_proxy(monkeypatch, tmp_path):
@@ -2629,7 +2661,7 @@ def test_rust_agent_sdk_browser_payload_includes_profile_domains_window_and_prox
 
 	monkeypatch.setenv('BROWSER_USE_TERMINAL_BINARY', '/tmp/browser-use-terminal')
 
-	agent = Agent(task='report title', browser_profile=BrowserProfile())
+	agent = Agent(task='report title', llm=type('LLM', (), {'model': 'gpt-test'})(), browser_profile=BrowserProfile())
 	params = agent._sdk_run_params(max_steps=4, task=agent.task)
 
 	assert params['browser_mode'] == 'remote-cdp'
@@ -3311,15 +3343,26 @@ def test_rust_agent_bridges_llm_credentials_to_terminal_env(monkeypatch):
 	assert 'LLM_BROWSER_OPENAI_COMPAT_BASE_URL' not in deepseek_env
 	assert ambient_env['LLM_BROWSER_ANTHROPIC_API_KEY'] == 'ambient-anthropic-key'
 
-	for agent, run_command, session_command in (
-		(openai_agent, 'run-openai', 'run-openai-session'),
-		(anthropic_agent, 'run-anthropic', 'run-anthropic-session'),
-		(openrouter_agent, 'run-openrouter', 'run-openrouter-session'),
-		(deepseek_agent, 'run-deepseek', 'run-deepseek-session'),
-	):
-		agent.terminal_session_id = '12345678-1234-1234-1234-123456789abc'
-		assert agent._run_argv(max_steps=3)[-4] == run_command
-		assert agent._run_existing_argv(max_steps=3)[-4] == session_command
+	assert openai_agent._sdk_run_params(max_steps=3, task=openai_agent.task)['llm'] | {'timeout': None} == {
+		'provider': 'openai',
+		'model': 'gpt-test',
+		'timeout': None,
+	}
+	assert anthropic_agent._sdk_run_params(max_steps=3, task=anthropic_agent.task)['llm'] | {'timeout': None} == {
+		'provider': 'anthropic',
+		'model': 'claude-test',
+		'timeout': None,
+	}
+	assert openrouter_agent._sdk_run_params(max_steps=3, task=openrouter_agent.task)['llm'] | {'timeout': None} == {
+		'provider': 'openrouter',
+		'model': 'openrouter/model',
+		'timeout': None,
+	}
+	assert deepseek_agent._sdk_run_params(max_steps=3, task=deepseek_agent.task)['llm'] | {'timeout': None} == {
+		'provider': 'deepseek',
+		'model': 'deepseek-chat',
+		'timeout': None,
+	}
 
 
 def test_rust_agent_requests_openai_compatible_usage_for_cost_calculation(monkeypatch):
@@ -3369,10 +3412,10 @@ def test_rust_agent_translates_browser_profile_cdp_url(monkeypatch):
 		cdp_url = 'http://127.0.0.1:9222'
 
 	monkeypatch.setenv('BROWSER_USE_TERMINAL_BINARY', '/tmp/browser-use-terminal')
-	agent = Agent(task='report title', browser_profile=BrowserProfile())
+	agent = Agent(task='report title', llm=type('LLM', (), {'model': 'gpt-test'})(), browser_profile=BrowserProfile())
 	env = agent._run_env()
 
-	assert 'browser_mode="remote-cdp"' in agent._run_argv(max_steps=4)
+	assert agent._sdk_run_params(max_steps=4, task=agent.task)['browser_mode'] == 'remote-cdp'
 	assert env['BU_CDP_URL'] == 'http://127.0.0.1:9222'
 	assert env['LLM_BROWSER_BROWSER_MODE'] == 'remote-cdp'
 
@@ -3499,12 +3542,12 @@ def test_rust_agent_translates_browser_profile_headless(monkeypatch):
 	monkeypatch.delenv('BROWSER_USE_RUST_BROWSER_MODE', raising=False)
 	monkeypatch.delenv('BROWSER_USE_BROWSER_MODE', raising=False)
 
-	headed = Agent(task='report title', browser_profile=HeadedProfile())
-	headless = Agent(task='report title', browser_profile=HeadlessProfile())
+	headed = Agent(task='report title', llm=type('LLM', (), {'model': 'gpt-test'})(), browser_profile=HeadedProfile())
+	headless = Agent(task='report title', llm=type('LLM', (), {'model': 'gpt-test'})(), browser_profile=HeadlessProfile())
 
-	assert 'browser_mode="managed-headed"' in headed._run_argv(max_steps=4)
+	assert headed._sdk_run_params(max_steps=4, task=headed.task)['browser_mode'] == 'managed-headed'
 	assert headed._run_env()['LLM_BROWSER_BROWSER_MODE'] == 'managed-headed'
-	assert 'browser_mode="managed-headless"' in headless._run_argv(max_steps=4)
+	assert headless._sdk_run_params(max_steps=4, task=headless.task)['browser_mode'] == 'managed-headless'
 	assert headless._run_env()['LLM_BROWSER_BROWSER_MODE'] == 'managed-headless'
 
 
@@ -3517,9 +3560,9 @@ def test_rust_agent_browser_mode_env_overrides_profile_headless(monkeypatch):
 	monkeypatch.setenv('BROWSER_USE_TERMINAL_BINARY', '/tmp/browser-use-terminal')
 	monkeypatch.setenv('BROWSER_USE_BROWSER_MODE', 'cloud')
 
-	agent = Agent(task='report title', browser_profile=HeadedProfile())
+	agent = Agent(task='report title', llm=type('LLM', (), {'model': 'gpt-test'})(), browser_profile=HeadedProfile())
 
-	assert 'browser_mode="cloud"' in agent._run_argv(max_steps=4)
+	assert agent._sdk_run_params(max_steps=4, task=agent.task)['browser_mode'] == 'cloud'
 	assert agent._run_env()['LLM_BROWSER_BROWSER_MODE'] == 'cloud'
 
 
@@ -3534,9 +3577,9 @@ def test_rust_agent_translates_browser_profile_cloud(monkeypatch):
 	monkeypatch.delenv('BROWSER_USE_RUST_BROWSER_MODE', raising=False)
 	monkeypatch.delenv('BROWSER_USE_BROWSER_MODE', raising=False)
 
-	agent = Agent(task='report title', browser_profile=CloudProfile())
+	agent = Agent(task='report title', llm=type('LLM', (), {'model': 'gpt-test'})(), browser_profile=CloudProfile())
 
-	assert 'browser_mode="cloud"' in agent._run_argv(max_steps=4)
+	assert agent._sdk_run_params(max_steps=4, task=agent.task)['browser_mode'] == 'cloud'
 	assert agent._run_env()['LLM_BROWSER_BROWSER_MODE'] == 'cloud'
 
 
@@ -4162,8 +4205,12 @@ def test_rust_agent_preserves_ordered_initial_actions_context():
 def test_rust_agent_skips_ambiguous_or_excluded_direct_urls():
 	from browser_use.rust import Agent
 
-	ambiguous = Agent(task='Compare example.com and browser-use.com.')
-	document = Agent(task='Open https://example.com/report.pdf and summarize it.')
+	class LLM:
+		model = 'gpt-test'
+		provider = 'test-provider'
+
+	ambiguous = Agent(task='Compare example.com and browser-use.com.', llm=cast(Any, LLM()))
+	document = Agent(task='Open https://example.com/report.pdf and summarize it.', llm=cast(Any, LLM()))
 
 	assert ambiguous.initial_url is None
 	assert 'First navigate to' not in ambiguous.task
@@ -4174,8 +4221,13 @@ def test_rust_agent_skips_ambiguous_or_excluded_direct_urls():
 def test_rust_agent_exposes_browser_use_settings():
 	from browser_use.rust import Agent
 
+	class LLM:
+		model = 'gpt-test'
+		provider = 'test-provider'
+
 	agent = Agent(
 		task='Open example.com',
+		llm=cast(Any, LLM()),
 		use_vision=False,
 		max_actions_per_step=2,
 		directly_open_url=False,
@@ -4185,7 +4237,8 @@ def test_rust_agent_exposes_browser_use_settings():
 	)
 
 	assert agent.initial_url is None
-	assert agent.settings.use_vision is False
+	assert agent.settings.use_vision is True
+	assert agent._sdk_run_params(max_steps=2, task=agent.task)['use_vision'] is True
 	assert agent.settings.max_actions_per_step == 2
 	assert agent.directly_open_url is False
 	assert agent.available_file_paths == ['/tmp/report.txt']
@@ -4226,7 +4279,7 @@ def test_rust_agent_defaults_page_extraction_llm_to_main_llm():
 	assert str(id(extraction_llm)) in override_agent.token_cost_service.registered_llms
 
 
-def test_rust_agent_default_llm_is_rust_only_anthropic_sonnet(monkeypatch):
+def test_rust_agent_default_llm_matches_browser_use_default(monkeypatch):
 	from browser_use.agent.service import _PythonAgent as BrowserUseAgent
 	from browser_use.rust import Agent as RustAgent
 
@@ -4236,11 +4289,8 @@ def test_rust_agent_default_llm_is_rust_only_anthropic_sonnet(monkeypatch):
 	rust_agent = RustAgent(task='Use the default model.', directly_open_url=False)
 
 	assert browser_use_agent.llm.provider == 'browser-use'
-	assert rust_agent.llm.provider == 'anthropic'
-	assert rust_agent.llm.model == 'claude-sonnet-4-6'
-	assert rust_agent.settings.flash_mode is False
-	assert rust_agent.settings.page_extraction_llm is rust_agent.llm
-	assert rust_agent.model == rust_agent.llm.model
+	assert rust_agent.llm.provider == browser_use_agent.llm.provider
+	assert rust_agent.model == browser_use_agent.llm.model
 
 
 def test_rust_agent_default_llm_respects_default_llm_env(monkeypatch):
@@ -4253,6 +4303,21 @@ def test_rust_agent_default_llm_respects_default_llm_env(monkeypatch):
 
 	assert agent.llm.provider == 'openai'
 	assert agent.llm.model == 'gpt-4.1-mini'
+
+
+def test_rust_agent_explicit_llm_ignores_default_llm_env(monkeypatch):
+	from browser_use.rust import Agent
+
+	monkeypatch.setenv('DEFAULT_LLM', 'openai_gpt_4_1_mini')
+
+	class LLM:
+		model = 'gpt-test'
+		provider = 'test-provider'
+
+	agent = Agent(task='Use configured default model.', llm=cast(Any, LLM()), directly_open_url=False)
+
+	assert agent.llm.provider == 'test-provider'
+	assert agent.llm.model == 'gpt-test'
 
 
 def test_rust_agent_enables_flash_mode_for_browser_use_llm_provider():
@@ -4308,8 +4373,7 @@ def test_rust_agent_llm_timeout_defaults_match_browser_use_model_families():
 	assert override_agent.settings.llm_timeout == 12
 
 
-def test_rust_agent_disables_vision_for_unsupported_model_families():
-	from browser_use.agent.service import _PythonAgent as BrowserUseAgent
+def test_rust_agent_forces_vision_for_all_model_families():
 	from browser_use.rust import Agent as RustAgent
 
 	class LLM:
@@ -4322,19 +4386,16 @@ def test_rust_agent_disables_vision_for_unsupported_model_families():
 			return type('Result', (), {'usage': None})()
 
 	for model in ['deepseek-chat', 'grok-3', 'grok-code']:
-		browser_use_agent = BrowserUseAgent(task='Inspect vision.', llm=LLM(model), directly_open_url=False, use_vision=True)
-		rust_agent = RustAgent(task='Inspect vision.', llm=LLM(model), directly_open_url=False, use_vision=True)
+		rust_agent = RustAgent(task='Inspect vision.', llm=LLM(model), directly_open_url=False, use_vision=False)
 
-		assert browser_use_agent.settings.use_vision is False
-		assert rust_agent.settings.use_vision is False
+		assert rust_agent.settings.use_vision is True
 
-	normal_agent = RustAgent(task='Inspect vision.', llm=LLM('gpt-test'), directly_open_url=False, use_vision=True)
+	normal_agent = RustAgent(task='Inspect vision.', llm=LLM('gpt-test'), directly_open_url=False, use_vision=False)
 
 	assert normal_agent.settings.use_vision is True
 
 
-def test_rust_agent_unsupported_vision_warnings_match_browser_use(monkeypatch):
-	from browser_use.agent.service import _PythonAgent as BrowserUseAgent
+def test_rust_agent_does_not_warn_when_forcing_vision(monkeypatch):
 	from browser_use.rust import Agent as RustAgent
 
 	class LLM:
@@ -4363,15 +4424,12 @@ def test_rust_agent_unsupported_vision_warnings_match_browser_use(monkeypatch):
 			pass
 
 	for model in ['deepseek-chat', 'grok-2']:
-		browser_use_logger = RecordingLogger()
 		rust_logger = RecordingLogger()
-		monkeypatch.setattr(BrowserUseAgent, 'logger', property(lambda self, logger=browser_use_logger: logger))
 		monkeypatch.setattr(RustAgent, 'logger', property(lambda self, logger=rust_logger: logger))
 
-		BrowserUseAgent(task='Inspect vision warning.', llm=LLM(model), directly_open_url=False, use_vision=True)
-		RustAgent(task='Inspect vision warning.', llm=LLM(model), directly_open_url=False, use_vision=True)
+		RustAgent(task='Inspect vision warning.', llm=LLM(model), directly_open_url=False, use_vision=False)
 
-		assert rust_logger.warnings == browser_use_logger.warnings
+		assert rust_logger.warnings == []
 
 
 def test_rust_agent_constructor_debug_summary_matches_browser_use(monkeypatch):
@@ -4533,7 +4591,8 @@ def test_rust_agent_initializes_tools_and_action_models():
 
 	assert isinstance(agent.tools, Tools)
 	assert 'done' in action_names
-	assert 'screenshot' not in action_names
+	assert agent.settings.use_vision is True
+	assert 'screenshot' in action_names
 	assert agent.ActionModel is not None
 	assert agent.DoneActionModel is not None
 	assert agent.AgentOutput is not None
@@ -4802,6 +4861,48 @@ def test_rust_agent_telemetry_filters_empty_reconstructed_urls():
 
 	agent._log_agent_event(max_steps=3)
 
+	assert captured_events[0].urls_visited == ['https://example.com']
+
+
+def test_rust_agent_telemetry_records_cloud_cdp_hostname():
+	import browser_use.rust.service as rust_service
+	from browser_use.rust import Agent
+
+	class LLM:
+		model = 'gpt-test'
+		provider = 'test-provider'
+
+	class BrowserProfile:
+		downloads_path = None
+
+	class BrowserSession:
+		cdp_url = 'wss://cloud-browser.example/devtools/browser/session'
+		browser_profile = BrowserProfile()
+
+	captured_events = []
+
+	class Telemetry:
+		def capture(self, event):
+			captured_events.append(event)
+
+	agent = Agent(task='Log cloud CDP telemetry.', llm=cast(Any, LLM()), browser_session=cast(Any, BrowserSession()))
+	agent.telemetry = Telemetry()
+	agent.history = rust_service._history_from_events(
+		[
+			{'event_type': 'browser.state', 'payload': {'url': 'https://example.com', 'title': 'Example'}},
+			{'event_type': 'session.done', 'payload': {'result': 'done'}},
+		],
+		model='gpt-test',
+		started=1.0,
+		finished=2.0,
+		output_model_schema=None,
+		process_error=None,
+	)
+
+	agent._log_agent_event(max_steps=3)
+
+	assert captured_events[0].name == 'agent_event'
+	assert captured_events[0].cdp_url == 'cloud-browser.example'
 	assert captured_events[0].urls_visited == ['https://example.com']
 
 
@@ -8834,7 +8935,7 @@ async def test_rust_agent_exposes_prepare_context_helper_method(monkeypatch):
 			'model_output': agent.state.last_model_output,
 			'result': agent.state.last_result,
 			'step_info': step_info,
-			'use_vision': False,
+			'use_vision': True,
 			'page_filtered_actions': 'filtered action prompt',
 			'sensitive_data': {'api_key': 'secret-value'},
 			'available_file_paths': ['/tmp/input.txt'],

@@ -87,9 +87,6 @@ AgentNewStepCallback = (
 AgentDoneCallback = Callable[[AgentHistoryList], Awaitable[None]] | Callable[[AgentHistoryList], None]
 logger = logging.getLogger(__name__)
 
-DEFAULT_RUST_SDK_TOOL_ALLOWLIST = ['browser', 'browser_script', 'done']
-DEFAULT_RUST_AGENT_LLM = 'anthropic_claude_sonnet_4_6'
-
 try:
 	from lmnr import Laminar  # type: ignore
 except ImportError:
@@ -600,9 +597,9 @@ def _resolve_default_llm(llm: BaseChatModel | None) -> BaseChatModel:
 		from browser_use.llm.models import get_llm_by_name
 
 		return get_llm_by_name(default_llm_name)
-	from browser_use.llm.models import get_llm_by_name
+	from browser_use import ChatBrowserUse
 
-	return get_llm_by_name(os.environ.get('BROWSER_USE_RUST_DEFAULT_LLM', DEFAULT_RUST_AGENT_LLM))
+	return ChatBrowserUse()
 
 
 def _extract_cdp_url(browser_session: BrowserSession | None) -> str | None:
@@ -1126,18 +1123,6 @@ def _llm_env_overrides(llm: Any) -> dict[str, str]:
 	elif provider == 'deepseek' and api_key:
 		overrides['DEEPSEEK_API_KEY'] = api_key
 	return overrides
-
-
-def _llm_terminal_command(llm: Any, *, existing_session: bool = False) -> str:
-	provider = _llm_provider_name(llm)
-	commands = {
-		'openai': ('run-openai', 'run-openai-session'),
-		'anthropic': ('run-anthropic', 'run-anthropic-session'),
-		'openrouter': ('run-openrouter', 'run-openrouter-session'),
-		'deepseek': ('run-deepseek', 'run-deepseek-session'),
-	}
-	run_command, session_command = commands.get(provider, ('run-codex', 'run-codex-session'))
-	return session_command if existing_session else run_command
 
 
 def _navigation_url_from_action(action: Any) -> str | None:
@@ -4146,6 +4131,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 			if width < 100 or height < 100:
 				raise ValueError('llm_screenshot_size dimensions must be at least 100 pixels')
 		llm = _resolve_default_llm(llm)
+		use_vision = True
 		if browser and browser_session:
 			raise ValueError('Cannot specify both "browser" and "browser_session" parameters. Use "browser" for the cleaner API.')
 		if getattr(llm, 'provider', None) == 'browser-use':
@@ -4186,8 +4172,6 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 			use_vision,
 			display_files_in_done_text,
 		)
-		if use_vision != 'auto':
-			self.tools.exclude_action('screenshot')
 		if skills and skill_ids:
 			raise ValueError('Cannot specify both "skills" and "skill_ids" parameters. Use "skills" for the cleaner API.')
 		skill_ids = skills or skill_ids
@@ -4257,13 +4241,6 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 			self.logger.info(f'💬 Saving conversation to {_log_pretty_path(self.settings.save_conversation_path)}')
 		self._setup_action_models()
 		self._verify_and_setup_llm()
-		model_name = str(getattr(self.llm, 'model', self.model) or '').lower()
-		if 'deepseek' in model_name:
-			self.logger.warning('⚠️ DeepSeek models do not support use_vision=True yet. Setting use_vision=False for now...')
-			self.settings.use_vision = False
-		if 'grok-3' in model_name or 'grok-code' in model_name:
-			self.logger.warning('⚠️ This XAI model does not support use_vision=True yet. Setting use_vision=False for now...')
-			self.settings.use_vision = False
 		logger.debug(
 			f'{" +vision" if self.settings.use_vision else ""}'
 			f' extraction_model={getattr(self.settings.page_extraction_llm, "model", "Unknown") if self.settings.page_extraction_llm else "Unknown"}'
@@ -5229,12 +5206,11 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		self._sync_state_from_history()
 
 	async def _log_sdk_progress(self, sdk: RustSdkClient) -> None:
-		seen = 0
+		logged = 0
 		last_summary: str | None = None
 		last_logged_at = 0.0
 		while True:
 			notification = await sdk.notification_queue.get()
-			seen += 1
 			summary = _sdk_notification_summary(notification)
 			if not summary:
 				continue
@@ -5243,7 +5219,8 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 				continue
 			last_summary = summary
 			last_logged_at = now
-			self.logger.info('Rust SDK progress #%s: %s', seen, summary)
+			logged += 1
+			self.logger.info('Rust SDK event %s: %s', logged, summary)
 
 	follow_up_task = follow_up
 
@@ -6404,9 +6381,6 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 			'calculate_cost': bool(self.settings.calculate_cost),
 			'use_vision': self.settings.use_vision,
 			'max_actions_per_step': int(self.settings.max_actions_per_step),
-			'config_overrides': {
-				'tool_allowlist': list(DEFAULT_RUST_SDK_TOOL_ALLOWLIST),
-			},
 		}
 		if self._sdk_agent_id:
 			params['agent_id'] = self._sdk_agent_id
@@ -6423,48 +6397,6 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		if client is None:
 			return
 		await client.close()
-
-	def _run_argv(self, max_steps: int) -> list[str]:
-		binary = find_browser_use_terminal_binary()
-		return [
-			binary,
-			*self._state_dir_args(),
-			'-c',
-			f'max_turns={int(max_steps)}',
-			'-c',
-			f'browser_mode="{self._browser_mode()}"',
-			_llm_terminal_command(self.llm),
-			self.task,
-			'--model',
-			self.model,
-		]
-
-	def _start_argv(self) -> list[str]:
-		binary = find_browser_use_terminal_binary()
-		return [
-			binary,
-			*self._state_dir_args(),
-			'start',
-			self.task,
-		]
-
-	async def _run_process(self, argv: list[str], timeout_seconds: int | None = None) -> tuple[int, str, str]:
-		proc = await asyncio.create_subprocess_exec(
-			*argv,
-			stdout=asyncio.subprocess.PIPE,
-			stderr=asyncio.subprocess.PIPE,
-			env=self._run_env(),
-		)
-		try:
-			stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout_seconds)
-		except TimeoutError:
-			proc.kill()
-			stdout, stderr = await proc.communicate()
-			stdout_text = stdout.decode(errors='replace')
-			stderr_text = stderr.decode(errors='replace')
-			timeout_error = f'browser-use-terminal timed out after {timeout_seconds} seconds'
-			return 124, stdout_text, '\n'.join(part for part in (stderr_text.strip(), timeout_error) if part)
-		return proc.returncode or 0, stdout.decode(errors='replace'), stderr.decode(errors='replace')
 
 	async def _call_callback(self, callback: AgentHookFunc | None, *args: Any) -> None:
 		if callback is None:
@@ -6607,23 +6539,6 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 				return True
 		return False
 
-	def _run_existing_argv(self, max_steps: int) -> list[str]:
-		if not self.terminal_session_id:
-			raise RustAgentError('No active Rust session. Call run() before rerunning an existing session.')
-		binary = find_browser_use_terminal_binary()
-		return [
-			binary,
-			*self._state_dir_args(),
-			'-c',
-			f'max_turns={int(max_steps)}',
-			'-c',
-			f'browser_mode="{self._browser_mode()}"',
-			_llm_terminal_command(self.llm, existing_session=True),
-			self.terminal_session_id,
-			'--model',
-			self.model,
-		]
-
 	def _state_dir_args(self) -> list[str]:
 		state_dir = os.environ.get('BROWSER_USE_RUST_STATE_DIR')
 		return ['--state-dir', state_dir] if state_dir else []
@@ -6696,52 +6611,6 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		if self.managed_browser_executable_path and _is_managed_browser_mode(browser_mode):
 			env['CHROME_PATH'] = self.managed_browser_executable_path
 		return env
-
-	def _session_id_from_stdout(self, stdout: str) -> str | None:
-		for line in reversed(stdout.splitlines()):
-			token = line.strip().split()[-1:] or ['']
-			candidate = token[0]
-			if len(candidate) >= 8 and all(ch in '0123456789abcdef-' for ch in candidate.lower()):
-				return candidate
-		return None
-
-	def _events_timeout_seconds(self) -> int:
-		raw = os.getenv('BROWSER_USE_RUST_EVENTS_TIMEOUT_SECONDS')
-		if raw:
-			try:
-				return max(1, int(raw))
-			except ValueError:
-				self.logger.warning(f'Ignoring invalid BROWSER_USE_RUST_EVENTS_TIMEOUT_SECONDS={raw!r}')
-		return 15
-
-	async def _load_events(self) -> list[dict[str, Any]]:
-		if not self.terminal_session_id:
-			return []
-		binary = find_browser_use_terminal_binary()
-		returncode, stdout_text, stderr_text = await self._run_process(
-			[
-				binary,
-				*self._state_dir_args(),
-				'events',
-				self.terminal_session_id,
-			],
-			timeout_seconds=self._events_timeout_seconds(),
-		)
-		if returncode:
-			self.logger.warning(
-				'Rust terminal event load failed with code %s: %s',
-				returncode,
-				(stderr_text or stdout_text).strip(),
-			)
-		events = []
-		for line in stdout_text.splitlines():
-			try:
-				parsed = json.loads(line)
-			except json.JSONDecodeError:
-				continue
-			if isinstance(parsed, dict):
-				events.append(parsed)
-		return events
 
 
 Agent.__module__ = 'browser_use.agent.service'
