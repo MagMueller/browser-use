@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import sys
@@ -2606,6 +2607,63 @@ async def test_rust_agent_runs_through_sdk_and_reuses_session_for_followup(monke
 	assert fake_sdk.calls[1][1]['browser_id'] == 'browser-1'
 	assert fake_sdk.calls[1][1]['followups'] == ['answer second']
 	assert fake_sdk.calls[1][1]['max_steps'] == 5
+
+
+async def test_rust_agent_ignores_legacy_run_process_monkeypatch_for_sdk_server(monkeypatch):
+	import browser_use.rust.service as rust_service
+	from browser_use.rust import Agent
+
+	class LLM:
+		model = 'fake'
+
+	created_clients = []
+
+	class FakeSdkClient:
+		def __init__(self, command, env):
+			self.command = command
+			self.env = env
+			self.stderr_lines = []
+			self.notifications = []
+			self.notification_queue = asyncio.Queue()
+			self.process = type('_Process', (), {'returncode': None})()
+			created_clients.append(self)
+
+		async def call(self, method, params):
+			assert method == 'agent.run_task'
+			return {
+				'agent_id': 'agent-sdk',
+				'session_id': 'session-sdk',
+				'browser_id': 'browser-sdk',
+				'history': {
+					'output': 'server result',
+					'success': True,
+					'done': True,
+					'errors': [],
+					'events': [
+						{'event_type': 'session.input', 'payload': {'text': params['task']}},
+						{'event_type': 'session.done', 'payload': {'result': 'server result', 'success': True}},
+					],
+				},
+			}
+
+		async def close(self):
+			self.process.returncode = 0
+
+	async def fail_run_process(*_args, **_kwargs):
+		raise AssertionError('legacy CLI process path should not be used by Agent.run()')
+
+	monkeypatch.setenv('BROWSER_USE_TERMINAL_BINARY', '/tmp/browser-use-terminal')
+	monkeypatch.setattr(rust_service, 'RustSdkClient', FakeSdkClient)
+	agent = Agent(task='answer through server', llm=LLM(), directly_open_url=False)
+	agent._run_process = fail_run_process
+
+	history = await agent.run(max_steps=3)
+
+	assert created_clients
+	assert created_clients[0].command[-2:] == ['--transport', 'stdio']
+	assert history.final_result() == 'server result'
+	assert agent.terminal_session_id == 'session-sdk'
+	assert agent._sdk_agent_id == 'agent-sdk'
 
 
 async def test_rust_agent_prices_sdk_child_usage_events_without_overriding_parent_result(monkeypatch):
