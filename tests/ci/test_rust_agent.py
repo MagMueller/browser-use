@@ -5,7 +5,7 @@ import inspect
 import json
 import sys
 from pathlib import Path
-from typing import get_args, get_origin, get_type_hints
+from typing import Any, cast, get_args, get_origin, get_type_hints
 
 import pytest
 from pydantic import BaseModel
@@ -260,6 +260,41 @@ def test_rust_events_reconstruct_browser_use_history():
 	assert history.usage.total_prompt_tokens == 11
 	assert history.usage.total_prompt_cached_tokens == 3
 	assert history.usage.total_completion_tokens == 7
+
+
+def test_rust_history_ignores_internal_browser_connection_url():
+	from browser_use.rust.service import _history_from_events
+
+	history = _history_from_events(
+		[
+			{'event_type': 'browser.connected', 'payload': {'url': 'http://127.0.0.1:41335'}},
+			{
+				'event_type': 'tool.output',
+				'payload': {'name': 'browser', 'text': 'Connected to browser at http://127.0.0.1:41335'},
+			},
+			{'event_type': 'browser.state', 'payload': {'url': 'https://example.com', 'title': 'Example'}},
+			{'event_type': 'session.done', 'payload': {'result': 'final answer'}},
+		],
+		model='gpt-test',
+		started=1.0,
+		finished=2.0,
+		output_model_schema=None,
+		process_error=None,
+	)
+	local_page_history = _history_from_events(
+		[
+			{'event_type': 'browser.state', 'payload': {'url': 'http://127.0.0.1:8000/', 'title': 'Local app'}},
+			{'event_type': 'session.done', 'payload': {'result': 'final answer'}},
+		],
+		model='gpt-test',
+		started=1.0,
+		finished=2.0,
+		output_model_schema=None,
+		process_error=None,
+	)
+
+	assert history.urls() == ['https://example.com']
+	assert local_page_history.urls() == ['http://127.0.0.1:8000/']
 
 
 def test_rust_history_reconstructs_terminal_browser_script_urls():
@@ -2144,6 +2179,48 @@ def test_rust_terminal_usage_mixed_events_do_not_shrink_totals():
 	assert summary.total_prompt_cache_creation_tokens == 50
 	assert summary.total_completion_tokens == 20
 	assert summary.total_tokens == 570
+
+
+def test_rust_sdk_event_dedupe_removes_projected_usage_duplicates():
+	from browser_use.rust.service import _dedupe_sdk_events, _usage_from_events
+
+	usage_payload = {
+		'info': {
+			'last_token_usage': {
+				'input_tokens': 100,
+				'cached_input_tokens': 40,
+				'input_cache_creation_tokens': 10,
+				'output_tokens': 5,
+				'total_tokens': 115,
+			},
+			'total_token_usage': {
+				'input_tokens': 100,
+				'cached_input_tokens': 40,
+				'input_cache_creation_tokens': 10,
+				'output_tokens': 5,
+				'total_tokens': 115,
+			},
+		}
+	}
+	events = [
+		{'seq': 1, 'id': 'usage-id', 'event_type': 'token_count', 'payload': usage_payload},
+		{'seq': 1, 'event_type': 'token_count', 'payload': usage_payload},
+		{'seq': 2, 'event_type': 'session.done', 'payload': {'result': 'done'}},
+		{'seq': 2, 'id': 'done-id', 'event_type': 'session.done', 'payload': {'result': 'done'}},
+	]
+
+	deduped = _dedupe_sdk_events(events)
+	summary = _usage_from_events(deduped, 'claude-sonnet-4-6')
+
+	assert len(deduped) == 2
+	assert deduped[0]['id'] == 'usage-id'
+	assert deduped[1]['id'] == 'done-id'
+	assert summary.entry_count == 1
+	assert summary.total_prompt_tokens == 100
+	assert summary.total_prompt_cached_tokens == 40
+	assert summary.total_prompt_cache_creation_tokens == 10
+	assert summary.total_completion_tokens == 5
+	assert summary.total_tokens == 115
 
 
 async def test_rust_terminal_priced_usage_prefers_model_usage_over_token_count(monkeypatch):
@@ -4149,19 +4226,33 @@ def test_rust_agent_defaults_page_extraction_llm_to_main_llm():
 	assert str(id(extraction_llm)) in override_agent.token_cost_service.registered_llms
 
 
-def test_rust_agent_defaults_llm_like_browser_use():
+def test_rust_agent_default_llm_is_rust_only_anthropic_sonnet(monkeypatch):
 	from browser_use.agent.service import _PythonAgent as BrowserUseAgent
 	from browser_use.rust import Agent as RustAgent
+
+	monkeypatch.setenv('ANTHROPIC_API_KEY', 'test-anthropic-key')
 
 	browser_use_agent = BrowserUseAgent(task='Use the default model.', directly_open_url=False)
 	rust_agent = RustAgent(task='Use the default model.', directly_open_url=False)
 
-	assert type(rust_agent.llm) is type(browser_use_agent.llm)
-	assert rust_agent.llm.provider == browser_use_agent.llm.provider == 'browser-use'
-	assert rust_agent.llm.model == browser_use_agent.llm.model
-	assert rust_agent.settings.flash_mode is True
+	assert browser_use_agent.llm.provider == 'browser-use'
+	assert rust_agent.llm.provider == 'anthropic'
+	assert rust_agent.llm.model == 'claude-sonnet-4-6'
+	assert rust_agent.settings.flash_mode is False
 	assert rust_agent.settings.page_extraction_llm is rust_agent.llm
 	assert rust_agent.model == rust_agent.llm.model
+
+
+def test_rust_agent_default_llm_respects_default_llm_env(monkeypatch):
+	from browser_use.rust import Agent
+
+	monkeypatch.setenv('OPENAI_API_KEY', 'test-openai-key')
+	monkeypatch.setenv('DEFAULT_LLM', 'openai_gpt_4_1_mini')
+
+	agent = Agent(task='Use configured default model.', directly_open_url=False)
+
+	assert agent.llm.provider == 'openai'
+	assert agent.llm.model == 'gpt-4.1-mini'
 
 
 def test_rust_agent_enables_flash_mode_for_browser_use_llm_provider():
@@ -4657,6 +4748,7 @@ async def test_rust_agent_exposes_logging_helper_methods(monkeypatch):
 		process_error=None,
 	)
 	agent._sync_state_from_history()
+	agent.state.n_steps = 99
 	agent._log_final_outcome_messages()
 	agent._log_agent_event(max_steps=9, agent_run_error='manual-error')
 
@@ -4666,11 +4758,51 @@ async def test_rust_agent_exposes_logging_helper_methods(monkeypatch):
 	assert captured_events[0].cdp_url == 'browser.example'
 	assert captured_events[0].action_history == [[{'done': {'text': 'done', 'success': True}}]]
 	assert captured_events[0].urls_visited == ['https://example.com']
+	assert captured_events[0].steps == 1
 	assert captured_events[0].total_input_tokens == 11
 	assert captured_events[0].total_output_tokens == 7
 	assert captured_events[0].prompt_cached_tokens == 3
 	assert captured_events[0].final_result_response == '"done"'
 	assert captured_events[0].error_message == 'manual-error'
+
+
+def test_rust_agent_telemetry_filters_empty_reconstructed_urls():
+	import browser_use.rust.service as rust_service
+	from browser_use.rust import Agent
+
+	class LLM:
+		model = 'gpt-test'
+		provider = 'test-provider'
+
+	captured_events = []
+
+	class Telemetry:
+		def capture(self, event):
+			captured_events.append(event)
+
+	agent = Agent(task='Log telemetry URLs.', llm=cast(Any, LLM()), directly_open_url=False)
+	agent.telemetry = Telemetry()
+	agent.history = rust_service._history_from_events(
+		[
+			{'event_type': 'model.turn.request', 'payload': {'model': 'gpt-test'}},
+			{
+				'event_type': 'tool.output',
+				'payload': {'name': 'browser', 'text': 'Connected to browser at http://127.0.0.1:41335'},
+			},
+			{'event_type': 'model.turn.request', 'payload': {'model': 'gpt-test'}},
+			{'event_type': 'browser.state', 'payload': {'url': 'https://example.com', 'title': 'Example'}},
+			{'event_type': 'session.done', 'payload': {'result': 'done'}},
+		],
+		model='gpt-test',
+		started=1.0,
+		finished=2.0,
+		output_model_schema=None,
+		process_error=None,
+	)
+
+	agent._log_agent_event(max_steps=3)
+
+	assert captured_events[0].urls_visited == ['https://example.com']
 
 
 async def test_rust_agent_run_records_terminal_telemetry(monkeypatch):
@@ -8741,8 +8873,8 @@ async def test_rust_agent_trace_and_cloud_auth_helpers():
 
 
 async def test_rust_agent_run_exposes_laminar_trace_id_for_eval_links(monkeypatch):
-	from browser_use.rust import Agent
 	import browser_use.rust.service as rust_service
+	from browser_use.rust import Agent
 
 	class FakeLaminar:
 		@staticmethod
@@ -8794,8 +8926,8 @@ def test_rust_laminar_replay_flush_avoids_context_reset(monkeypatch):
 
 
 def test_rust_agent_laminar_run_summary_populates_current_span(monkeypatch):
-	from browser_use.rust import Agent
 	import browser_use.rust.service as rust_service
+	from browser_use.rust import Agent
 	from browser_use.rust.service import _history_from_events
 
 	class FakeLaminar:
@@ -9151,8 +9283,8 @@ async def test_rust_agent_authenticate_cloud_sync_logs_browser_use_warning(monke
 
 
 def test_rust_agent_trace_metadata_matches_browser_use_helpers(monkeypatch):
-	from browser_use.rust import Agent
 	import browser_use.rust.service as rust_service
+	from browser_use.rust import Agent
 	from browser_use.rust.service import _history_from_events
 
 	monkeypatch.setattr(rust_service, 'get_browser_use_version', lambda: '9.9.9-test')

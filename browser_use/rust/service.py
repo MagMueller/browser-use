@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 import ast
+import asyncio
 import base64
 import hashlib
 import inspect
@@ -34,8 +34,8 @@ from browser_use.agent.cloud_events import (
 	UpdateAgentTaskEvent,
 )
 from browser_use.agent.judge import construct_judge_messages
-from browser_use.agent.message_manager.utils import save_conversation
 from browser_use.agent.message_manager.service import MessageManager
+from browser_use.agent.message_manager.utils import save_conversation
 from browser_use.agent.prompts import SystemPrompt
 from browser_use.agent.views import (
 	ActionResult,
@@ -69,8 +69,8 @@ from browser_use.tokens.views import ModelUsageStats, UsageSummary
 from browser_use.tools.registry.views import ActionModel
 from browser_use.tools.service import Tools
 from browser_use.utils import (
-	SignalHandler,
 	URL_PATTERN,
+	SignalHandler,
 	_log_pretty_path,
 	check_latest_browser_use_version,
 	get_browser_use_version,
@@ -78,7 +78,6 @@ from browser_use.utils import (
 	is_placeholder_url,
 	sanitize_url_candidate,
 )
-
 
 Context = TypeVar('Context')
 AgentHookFunc = Callable[['Agent'], Awaitable[None]]
@@ -89,6 +88,7 @@ AgentDoneCallback = Callable[[AgentHistoryList], Awaitable[None]] | Callable[[Ag
 logger = logging.getLogger(__name__)
 
 DEFAULT_RUST_SDK_TOOL_ALLOWLIST = ['browser', 'browser_script', 'done']
+DEFAULT_RUST_AGENT_LLM = 'anthropic_claude_sonnet_4_6'
 
 try:
 	from lmnr import Laminar  # type: ignore
@@ -511,7 +511,41 @@ def _sdk_notification_events(sdk: Any) -> list[dict[str, Any]]:
 			continue
 		seen.add(identity)
 		events.append(event)
-	return events
+	return _dedupe_sdk_events(events)
+
+
+def _event_payload_fingerprint(event: dict[str, Any]) -> str:
+	try:
+		return json.dumps(_event_payload(event), sort_keys=True, default=str)
+	except Exception:
+		return repr(_event_payload(event))
+
+
+def _sdk_event_dedupe_identity(event: dict[str, Any], fallback_index: int) -> tuple[Any, ...]:
+	event_type = _event_type(event)
+	seq = event.get('seq')
+	if seq is not None:
+		return ('seq', seq, event_type, _event_payload_fingerprint(event))
+	event_id = event.get('id') or event.get('event_id')
+	if event_id is not None:
+		return ('id', event_id, event_type)
+	return ('fallback', fallback_index)
+
+
+def _dedupe_sdk_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+	"""Remove SDK response/projected duplicates while preserving first-seen order."""
+	deduped: dict[tuple[Any, ...], dict[str, Any]] = {}
+	order: list[tuple[Any, ...]] = []
+	for index, event in enumerate(events):
+		key = _sdk_event_dedupe_identity(event, index)
+		existing = deduped.get(key)
+		if existing is None:
+			deduped[key] = event
+			order.append(key)
+			continue
+		if not (existing.get('id') or existing.get('event_id')) and (event.get('id') or event.get('event_id')):
+			deduped[key] = event
+	return [deduped[key] for key in order]
 
 
 def _sdk_events_truncated_for_transport(events: list[dict[str, Any]]) -> bool:
@@ -566,9 +600,9 @@ def _resolve_default_llm(llm: BaseChatModel | None) -> BaseChatModel:
 		from browser_use.llm.models import get_llm_by_name
 
 		return get_llm_by_name(default_llm_name)
-	from browser_use import ChatBrowserUse
+	from browser_use.llm.models import get_llm_by_name
 
-	return ChatBrowserUse()
+	return get_llm_by_name(os.environ.get('BROWSER_USE_RUST_DEFAULT_LLM', DEFAULT_RUST_AGENT_LLM))
 
 
 def _extract_cdp_url(browser_session: BrowserSession | None) -> str | None:
@@ -2580,6 +2614,14 @@ def _browser_url(value: Any) -> str:
 	return ''
 
 
+def _internal_browser_endpoint_url(url: str) -> bool:
+	parsed = urlparse(url)
+	return parsed.scheme in {'http', 'https'} and parsed.hostname in {'127.0.0.1', 'localhost', '::1'} and parsed.path in {
+		'',
+		'/',
+	}
+
+
 def _browser_state_candidates(value: Any) -> list[tuple[str, str, str]]:
 	candidates: list[tuple[str, str, str]] = []
 	if isinstance(value, dict):
@@ -2753,6 +2795,8 @@ def _browser_state_from_events(events: list[dict[str, Any]]) -> BrowserStateHist
 			else:
 				candidates = _browser_state_candidates(payload)
 			for candidate_url, candidate_title, candidate_target_id in candidates:
+				if payload.get('name') == 'browser' and _internal_browser_endpoint_url(candidate_url):
+					continue
 				url = candidate_url
 				title = candidate_title or title
 				tabs = [TabInfo(url=url, title=title, target_id=candidate_target_id)]
@@ -2767,7 +2811,10 @@ def _browser_state_from_events(events: list[dict[str, Any]]) -> BrowserStateHist
 		):
 			continue
 		payload = _event_payload(event)
-		url = _browser_url(payload.get('live_url')) or _browser_url(payload.get('url')) or url
+		next_url = _browser_url(payload.get('live_url')) or _browser_url(payload.get('url'))
+		if event_type in {'browser.connected', 'browser.reconnected'} and _internal_browser_endpoint_url(next_url):
+			next_url = ''
+		url = next_url or url
 		title = str(payload.get('title') or title)
 		raw_tabs = payload.get('tabs')
 		if isinstance(raw_tabs, list):
@@ -4576,8 +4623,8 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 				agent_type=None,
 				action_errors=self.history.errors(),
 				action_history=action_history_data,
-				urls_visited=self.history.urls(),
-				steps=self.state.n_steps,
+				urls_visited=[url for url in self.history.urls() if url],
+				steps=self.history.number_of_steps(),
 				total_input_tokens=total_input_tokens,
 				total_output_tokens=total_output_tokens,
 				prompt_cached_tokens=prompt_cached_tokens,
@@ -5059,16 +5106,16 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 			if isinstance(history_payload, dict):
 				raw_events = history_payload.get('events')
 				if isinstance(raw_events, list):
-					events = [event for event in raw_events if isinstance(event, dict)]
+					events = _dedupe_sdk_events([event for event in raw_events if isinstance(event, dict)])
 					errors = history_payload.get('errors')
 					if process_error is None and history_payload.get('success') is False and isinstance(errors, list) and errors:
 						process_error = '\n'.join(str(error) for error in errors if error)
 				raw_child_events = history_payload.get('child_events')
 				if isinstance(raw_child_events, list):
-					child_events = [event for event in raw_child_events if isinstance(event, dict)]
+					child_events = _dedupe_sdk_events([event for event in raw_child_events if isinstance(event, dict)])
 				raw_usage_events = history_payload.get('usage_events')
 				if isinstance(raw_usage_events, list):
-					usage_events = [event for event in raw_usage_events if isinstance(event, dict)]
+					usage_events = _dedupe_sdk_events([event for event in raw_usage_events if isinstance(event, dict)])
 				response_usage_event = _usage_event_from_sdk_history_usage(history_payload.get('usage'))
 		elif process_error is None:
 			process_error = 'Rust SDK server returned an invalid response.'

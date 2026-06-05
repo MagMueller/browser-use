@@ -187,6 +187,18 @@ This branch keeps the Python `Agent` unchanged unless callers explicitly import
      browser runs, proxy country is passed to `browser remote start`, so Rust
      SDK sessions can use Browser Use Cloud browser proxies through the same
      Python-facing `browser_profile`/`browser_session` options.
+   - Browser-use now deduplicates SDK response/projected events before
+     reconstructing history and usage. Duplicate `token_count` and
+     `session.done` records no longer inflate eval history, dashboard usage, or
+     telemetry payloads when the terminal server returns both live and projected
+     event streams.
+   - Reconstructed browser history ignores internal browser-control endpoint
+     URLs such as `http://127.0.0.1:<port>` while still preserving genuine local
+     page URLs. Eval traces therefore show user-visible pages instead of CDP
+     helper endpoints.
+   - The Rust-only default LLM now resolves to Claude Sonnet 4.6 via
+     browser-use-style model names, while `DEFAULT_LLM` can still override it.
+     The normal Python `browser_use.Agent` default remains unchanged.
 
 ## Current Proof
 
@@ -248,6 +260,8 @@ This branch keeps the Python `Agent` unchanged unless callers explicitly import
 - terminal `cargo test -p browser-use-cli sdk_provider_run_config_maps_browser_use_options_to_rust_core -- --nocapture`
 - terminal `cargo test -p browser-use-agent stored_cloud_profile_uses_sdk_proxy_country_env_when_connecting -- --nocapture`
 - browser-use `uv run pytest tests/ci/test_rust_agent.py::test_rust_agent_sdk_browser_payload_includes_profile_domains_window_and_proxy -q`
+- browser-use `uv run python -m py_compile browser_use/rust/service.py`
+- browser-use `uv run pytest tests/ci/test_rust_agent.py::test_rust_sdk_event_dedupe_removes_projected_usage_duplicates tests/ci/test_rust_agent.py::test_rust_history_ignores_internal_browser_connection_url tests/ci/test_rust_agent.py::test_rust_agent_default_llm_is_rust_only_anthropic_sonnet tests/ci/test_rust_agent.py::test_rust_agent_default_llm_respects_default_llm_env tests/ci/test_rust_agent.py::test_rust_agent_exposes_logging_helper_methods tests/ci/test_rust_agent.py::test_rust_agent_telemetry_filters_empty_reconstructed_urls tests/ci/models/test_llm_model_factory.py::test_get_llm_by_name_resolves_anthropic_sonnet_4_6_from_env -q`
 - evaluations-internal `uv run python -m py_compile eval/service.py`
 - evaluations-internal `python -m py_compile eval/task_types.py`
 - evaluations-internal `PYTHONPATH=. uv run pytest tests/test_service_cli.py -q -k 'usage_aliases or trims_oversized_history_fields or rust_eval_uses_adapter_initial_navigation_default or rust_eval_preserves_explicit_direct_initial_navigation_override'`
