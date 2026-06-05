@@ -203,6 +203,12 @@ This branch keeps the Python `Agent` unchanged unless callers explicitly import
    - The Rust Agent default LLM resolution follows the normal browser-use path:
      explicit `DEFAULT_LLM` wins, otherwise `ChatBrowserUse()` is used. Real
      eval runs still pass Claude Sonnet 4.6 explicitly through the SDK request.
+   - Terminal `http_get_many(...)` and `browser_fetch(..., return_error=True)`
+     now return recoverable error records that are both dict-compatible and
+     response-compatible (`.status_code`, `.status`, `.headers`, `.text`,
+     `.content`, `.url`). General browser-script code can inspect a failed
+     helper response without crashing the whole step with
+     `AttributeError: 'dict' object has no attribute 'status_code'`.
 
 ## Current Proof
 
@@ -270,6 +276,11 @@ This branch keeps the Python `Agent` unchanged unless callers explicitly import
 - browser-use `uv run pytest tests/ci/test_rust_agent.py::test_rust_agent_translates_browser_use_args_to_terminal tests/ci/test_rust_agent.py::test_rust_agent_sdk_params_leave_terminal_tools_unrestricted -q`
 - browser-use `uv run pytest tests/ci/test_rust_agent.py -q` (192 passed, 42 skipped legacy CLI-process tests)
 - browser-use `uv run ruff check browser_use/rust/service.py tests/ci/test_rust_agent.py tests/ci/models/test_llm_model_factory.py`
+- terminal `cargo test -p browser-use-browser browser_script_http_get_many_preserves_order_and_errors -- --nocapture`
+- terminal `cargo test -p browser-use-browser browser_script_browser_fetch_single_returns_structured_errors_by_default -- --nocapture`
+- terminal `cargo fmt --check`
+- terminal `cargo test -p browser-use-cli sdk_run_attaches_child_agent_runner_to_provider_config -- --nocapture`
+- terminal `cargo test -p browser-use-agent subagent_tools_are_registered_in_the_dispatcher -- --nocapture`
 - evaluations-internal `uv run python -m py_compile eval/service.py`
 - evaluations-internal `python -m py_compile eval/task_types.py`
 - evaluations-internal `PYTHONPATH=. uv run pytest tests/test_service_cli.py -q -k 'usage_aliases or trims_oversized_history_fields or rust_eval_uses_adapter_initial_navigation_default or rust_eval_preserves_explicit_direct_initial_navigation_override'`
@@ -279,6 +290,15 @@ This branch keeps the Python `Agent` unchanged unless callers explicitly import
   `BROWSER_USE_TERMINAL_BINARY=/home/exedev/Developer/terminal/target/debug/browser-use-terminal`,
   proving `Agent.run()` calls the real SDK server and `Agent.follow_up()` reuses the
   same SDK session.
+- real_v8 5-task eval smoke `kh721gr6v248emmdw9kn4mf645882qdk` on
+  browser-use `ad74b9f23da5c3ec1773b57dce856df9467777c5` and terminal
+  `b59372cc03b574e1bb82d9ad814ebb6c2d79bd1c`: 5/5 completed, scores
+  80/90/100/100/100 with Agent SDK judge and Browser Use Cloud CDP browser.
+- real_v8 50-task eval `kh7749jfyd5x54n5wzt4cqezmh883tgp` on the same
+  browser-use SHA and terminal `b59372cc03b574e1bb82d9ad814ebb6c2d79bd1c`
+  completed all 50 task rows but scored below target; repeated low-output
+  rows exposed the terminal fetch error-record compatibility issue fixed by
+  terminal `5382d8b`.
 
 ## Known Transitional Debt
 
