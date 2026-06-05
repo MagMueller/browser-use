@@ -209,6 +209,11 @@ This branch keeps the Python `Agent` unchanged unless callers explicitly import
      `.content`, `.url`). General browser-script code can inspect a failed
      helper response without crashing the whole step with
      `AttributeError: 'dict' object has no attribute 'status_code'`.
+   - Terminal `js(...)` in `browser_script` now tolerates common anonymous
+     function snippets and async function-IIFE snippets emitted by agents. This
+     avoids repeated generic JavaScript syntax failures such as
+     `Function statements require a function name` and `await is only valid in
+     async functions` without adding task- or domain-specific behavior.
 
 ## Current Proof
 
@@ -278,6 +283,8 @@ This branch keeps the Python `Agent` unchanged unless callers explicitly import
 - browser-use `uv run ruff check browser_use/rust/service.py tests/ci/test_rust_agent.py tests/ci/models/test_llm_model_factory.py`
 - terminal `cargo test -p browser-use-browser browser_script_http_get_many_preserves_order_and_errors -- --nocapture`
 - terminal `cargo test -p browser-use-browser browser_script_browser_fetch_single_returns_structured_errors_by_default -- --nocapture`
+- terminal `cargo test -p browser-use-browser browser_script_js_accepts_anonymous_function_snippets -- --nocapture`
+- terminal `cargo test -p browser-use-browser browser_script_js_asyncifies_parenthesized_function_iife_with_await -- --nocapture`
 - terminal `cargo fmt --check`
 - terminal `cargo test -p browser-use-cli sdk_run_attaches_child_agent_runner_to_provider_config -- --nocapture`
 - terminal `cargo test -p browser-use-agent subagent_tools_are_registered_in_the_dispatcher -- --nocapture`
@@ -299,6 +306,16 @@ This branch keeps the Python `Agent` unchanged unless callers explicitly import
   completed all 50 task rows but scored below target; repeated low-output
   rows exposed the terminal fetch error-record compatibility issue fixed by
   terminal `5382d8b`.
+- real_v8 50-task eval `kh7530fhjr52h81b0fvx7fhem5882ty1` on browser-use
+  `7bcf9754f103a1bb6c2e6d031940a162bb4adfbe` and terminal
+  `5382d8b7ccc72c102fbeb2b68940177e5371d753` was still running when
+  inspected, with 38/50 rows saved, no empty final responses in fetched full
+  histories, no access-denied count, and repeated recoverable browser-script JS
+  syntax errors that motivated terminal `aa3f3ea`.
+- final real_v8 50-task eval `kh7br0crtahkq408f9dw41z901883qy5` was
+  dispatched on browser-use `7bcf9754f103a1bb6c2e6d031940a162bb4adfbe` and
+  terminal `aa3f3ea78d45564ea0e5f5443e4f13145e5ca9a5` with Browser Use Cloud
+  CDP browser and Agent SDK judge.
 
 ## Known Transitional Debt
 
