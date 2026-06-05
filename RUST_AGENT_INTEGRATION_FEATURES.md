@@ -181,6 +181,12 @@ This branch keeps the Python `Agent` unchanged unless callers explicitly import
      Rust SDK server path, so the legacy terminal CLI adapter cannot silently
      replace the new server protocol while the normal Python `browser_use.Agent`
      remains unchanged.
+   - Terminal SDK browser requests now preserve and forward additional
+     Browser Use-style browser settings: proxy country, local profile label,
+     allowed/blocked domains, window size, and state directory. For cloud
+     browser runs, proxy country is passed to `browser remote start`, so Rust
+     SDK sessions can use Browser Use Cloud browser proxies through the same
+     Python-facing `browser_profile`/`browser_session` options.
 
 ## Current Proof
 
@@ -237,6 +243,11 @@ This branch keeps the Python `Agent` unchanged unless callers explicitly import
 - browser-use `uv run pytest tests/ci/test_rust_agent.py::test_rust_agent_recovers_nested_sdk_notification_events tests/ci/test_rust_agent.py::test_rust_agent_prefers_notification_final_when_response_history_lacks_result tests/ci/test_rust_agent.py::test_rust_agent_uses_sdk_history_usage_when_events_do_not_include_usage tests/ci/test_rust_agent.py::test_rust_agent_prices_sdk_child_usage_events_without_overriding_parent_result -q`
 - browser-use `uv run pytest tests/ci/test_rust_agent.py::test_rust_agent_recovers_final_result_from_sdk_notifications_after_transport_error tests/ci/test_rust_agent.py::test_rust_agent_recovers_nested_sdk_notification_events tests/ci/test_rust_agent.py::test_rust_agent_recovers_projected_sdk_final_events tests/ci/test_rust_agent.py::test_rust_agent_prefers_notification_final_when_response_history_lacks_result tests/ci/test_rust_agent.py::test_rust_agent_uses_sdk_history_usage_when_events_do_not_include_usage tests/ci/test_rust_agent.py::test_rust_agent_prices_sdk_child_usage_events_without_overriding_parent_result -q`
 - browser-use `uv run pytest tests/ci/test_rust_agent.py::test_rust_agent_runs_through_sdk_and_reuses_session_for_followup tests/ci/test_rust_agent.py::test_rust_agent_ignores_legacy_run_process_monkeypatch_for_sdk_server -q`
+- terminal `cargo fmt --check`
+- terminal `cargo test -p browser-use-cli sdk_json_rpc_browser_create_preserves_browser_use_settings -- --nocapture`
+- terminal `cargo test -p browser-use-cli sdk_provider_run_config_maps_browser_use_options_to_rust_core -- --nocapture`
+- terminal `cargo test -p browser-use-agent stored_cloud_profile_uses_sdk_proxy_country_env_when_connecting -- --nocapture`
+- browser-use `uv run pytest tests/ci/test_rust_agent.py::test_rust_agent_sdk_browser_payload_includes_profile_domains_window_and_proxy -q`
 - evaluations-internal `uv run python -m py_compile eval/service.py`
 - evaluations-internal `python -m py_compile eval/task_types.py`
 - evaluations-internal `PYTHONPATH=. uv run pytest tests/test_service_cli.py -q -k 'usage_aliases or trims_oversized_history_fields or rust_eval_uses_adapter_initial_navigation_default or rust_eval_preserves_explicit_direct_initial_navigation_override'`

@@ -2539,6 +2539,31 @@ def test_rust_agent_translates_browser_use_args_to_terminal(monkeypatch):
 	assert "First navigate to 'https://example.com'" in params['task']
 
 
+def test_rust_agent_sdk_browser_payload_includes_profile_domains_window_and_proxy(monkeypatch, tmp_path):
+	from browser_use.rust import Agent
+
+	class BrowserProfile:
+		cdp_url = 'http://127.0.0.1:9222'
+		allowed_domains = ['example.com']
+		prohibited_domains = ['*.tracking.example']
+		window_size = {'width': 1440, 'height': 900}
+		proxy_country_code = 'DE'
+		state_dir = tmp_path
+
+	monkeypatch.setenv('BROWSER_USE_TERMINAL_BINARY', '/tmp/browser-use-terminal')
+
+	agent = Agent(task='report title', browser_profile=BrowserProfile())
+	params = agent._sdk_run_params(max_steps=4, task=agent.task)
+
+	assert params['browser_mode'] == 'remote-cdp'
+	assert params['browser']['cdp_url'] == 'http://127.0.0.1:9222'
+	assert params['browser']['allowed_domains'] == ['example.com']
+	assert params['browser']['blocked_domains'] == ['*.tracking.example']
+	assert params['browser']['window_size'] == {'width': 1440, 'height': 900}
+	assert params['browser']['proxy_country_code'] == 'DE'
+	assert params['browser']['state_dir'] == str(tmp_path)
+
+
 async def test_rust_agent_runs_through_sdk_and_reuses_session_for_followup(monkeypatch):
 	from browser_use.rust import Agent
 

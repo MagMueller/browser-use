@@ -914,6 +914,18 @@ def _extract_browser_viewport(
 	return no_viewport, viewport
 
 
+def _extract_browser_window_size(
+	browser_session: BrowserSession | None, browser_profile: BrowserProfile | None
+) -> dict[str, int] | None:
+	session_profile = getattr(browser_session, 'browser_profile', None)
+	for profile in (session_profile, browser_profile, browser_session):
+		window_size = _viewport_size(getattr(profile, 'window_size', None))
+		if window_size is not None:
+			width, height = window_size
+			return {'width': width, 'height': height}
+	return None
+
+
 def _storage_state_value(value: Any) -> dict[str, Any] | None:
 	if isinstance(value, dict):
 		return value
@@ -4239,6 +4251,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 			self.browser_session, self.browser_profile
 		)
 		self.browser_no_viewport, self.browser_viewport = _extract_browser_viewport(self.browser_session, self.browser_profile)
+		self.browser_window_size = _extract_browser_window_size(self.browser_session, self.browser_profile)
 		self.browser_storage_state = _extract_browser_storage_state(self.browser_session, self.browser_profile)
 		self.sensitive_data_context = _sensitive_data_context(sensitive_data)
 		_warn_sensitive_data_domain_constraints(self.logger, sensitive_data, self.allowed_domains)
@@ -6293,8 +6306,12 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 		put('cdp_headers', self.cdp_headers or None)
 		put('user_agent', self.browser_user_agent)
 		put('viewport', self.browser_viewport)
+		put('window_size', self.browser_window_size)
 		put('storage_state', self.browser_storage_state)
 		put('downloads_path', self.browser_downloads_path)
+		put('allowed_domains', self.allowed_domains or None)
+		put('blocked_domains', self.prohibited_domains or None)
+		put('state_dir', self._sdk_browser_state_dir())
 		put('no_viewport', self.browser_no_viewport)
 		put('accept_downloads', self.browser_accept_downloads)
 		put('headless', _extract_headless_preference(self.browser_session, self.browser_profile))
@@ -6321,6 +6338,12 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 				value = getattr(profile, attr, None)
 				if isinstance(value, str) and value:
 					return value
+		return None
+
+	def _sdk_browser_state_dir(self) -> str | None:
+		value = getattr(self.browser_profile, 'state_dir', None)
+		if isinstance(value, (str, os.PathLike)) and str(value):
+			return str(Path(value).expanduser())
 		return None
 
 	def _sdk_run_params(self, *, max_steps: int, task: str, followups: list[str] | None = None) -> dict[str, Any]:
