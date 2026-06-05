@@ -315,7 +315,10 @@ This branch keeps the Python `Agent` unchanged unless callers explicitly import
 - final real_v8 50-task eval `kh7br0crtahkq408f9dw41z901883qy5` was
   dispatched on browser-use `7bcf9754f103a1bb6c2e6d031940a162bb4adfbe` and
   terminal `aa3f3ea78d45564ea0e5f5443e4f13145e5ca9a5` with Browser Use Cloud
-  CDP browser and Agent SDK judge.
+  CDP browser and Agent SDK judge. It completed all 50 rows with Agent SDK
+  judging, averaged 78.5, saved partial final responses for the six timeboxed
+  zero-score rows, and is tagged as `eval/kh7br-real-v8-50-78p50` in both
+  browser-use and terminal.
 
 ## Known Transitional Debt
 
