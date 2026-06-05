@@ -214,6 +214,10 @@ This branch keeps the Python `Agent` unchanged unless callers explicitly import
      avoids repeated generic JavaScript syntax failures such as
      `Function statements require a function name` and `await is only valid in
      async functions` without adding task- or domain-specific behavior.
+   - Terminal SDK `agent.create` now persists the initial task input only through
+     the runtime observed-event path. SDK LLM prompts and Laminar spans therefore
+     contain the task once instead of duplicating the same initial user message,
+     which improves trace fidelity and reduces avoidable prompt/cache churn.
 
 ## Current Proof
 
@@ -288,6 +292,8 @@ This branch keeps the Python `Agent` unchanged unless callers explicitly import
 - terminal `cargo fmt --check`
 - terminal `cargo test -p browser-use-cli sdk_run_attaches_child_agent_runner_to_provider_config -- --nocapture`
 - terminal `cargo test -p browser-use-agent subagent_tools_are_registered_in_the_dispatcher -- --nocapture`
+- terminal `cargo test -p browser-use-cli sdk_json_rpc_agent_run_executes_fake_backend -- --nocapture`
+- terminal `cargo test -p browser-use-cli sdk_json_rpc_agent_run_task_executes_fake_backend_with_normalized_history -- --nocapture`
 - evaluations-internal `uv run python -m py_compile eval/service.py`
 - evaluations-internal `python -m py_compile eval/task_types.py`
 - evaluations-internal `PYTHONPATH=. uv run pytest tests/test_service_cli.py -q -k 'usage_aliases or trims_oversized_history_fields or rust_eval_uses_adapter_initial_navigation_default or rust_eval_preserves_explicit_direct_initial_navigation_override'`
@@ -319,6 +325,21 @@ This branch keeps the Python `Agent` unchanged unless callers explicitly import
   judging, averaged 78.5, saved partial final responses for the six timeboxed
   zero-score rows, and is tagged as `eval/kh7br-real-v8-50-78p50` in both
   browser-use and terminal.
+- real_v8 50-task eval `kh7880wm0ffgsyqkwzfwn9hc7s882mff` was dispatched on
+  browser-use `5c40474473a61651f25cd2d084aa1fc278c5c714` and terminal
+  `640e052ca5f8e8654069a414814ac2f061861ce2` with Browser Use Cloud CDP
+  browser, no `--proxyless` flag, a 30 minute task/agent timebox, and Agent SDK
+  judge. GitHub runner logs show `--browser browser-use-cloud`, Browser Use
+  Cloud session creation, and Rust `browser_mode=remote-cdp`. When inspected,
+  49 scored rows averaged 76.29 while one placeholder row was rerunning; low
+  rows mostly had partial final responses after 30 minute cancellations rather
+  than missing branch/CDP/judge/Laminar infrastructure.
+- Laminar trace inspection for `kh7880wm0ffgsyqkwzfwn9hc7s882mff` confirmed
+  main-agent `rust_core.llm` spans, browser tool spans, usage attributes, and a
+  duplicated initial task user message. Terminal `06627d9` fixes the duplicated
+  `session.input` persistence and the focused SDK JSON-RPC tests above prove
+  the initial task input is now stored exactly once for both `agent.run` and
+  `agent.run_task`.
 
 ## Known Transitional Debt
 
