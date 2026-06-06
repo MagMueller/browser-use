@@ -339,6 +339,8 @@ This branch keeps the Python `Agent` unchanged unless callers explicitly import
 - browser-use `uv run ruff check browser_use/rust/service.py tests/ci/test_rust_agent.py tests/ci/models/test_llm_model_factory.py`
 - terminal `cargo test -p browser-use-browser browser_script_http_get_many_preserves_order_and_errors -- --nocapture`
 - terminal `cargo test -p browser-use-browser browser_script_browser_fetch_single_returns_structured_errors_by_default -- --nocapture`
+- terminal `cargo test -p browser-use-browser browser_script_http_get_matches_proxy_gzip_and_binary_contracts --lib`
+- terminal `cargo test -p browser-use-browser browser_script_http_get_many_preserves_order_and_errors --lib`
 - terminal `cargo test -p browser-use-browser browser_script_js_accepts_anonymous_function_snippets -- --nocapture`
 - terminal `cargo test -p browser-use-browser browser_script_js_asyncifies_parenthesized_function_iife_with_await -- --nocapture`
 - terminal `cargo test -p browser-use-browser browser_script_restores_picklable_user_state_between_calls -- --nocapture`
@@ -413,6 +415,17 @@ This branch keeps the Python `Agent` unchanged unless callers explicitly import
   `session.input` persistence and the focused SDK JSON-RPC tests above prove
   the initial task input is now stored exactly once for both `agent.run` and
   `agent.run_task`.
+- real_v8 5-task eval smoke `kh7b7a054b8h06vw3bcvkbt4cs885ezr` was dispatched on
+  browser-use `ddd4bb2b7e9bb9e2eb6b65b7ebb9204dae150f91` and terminal
+  `e0d997819da750208b55d7515eaabf679ff1c16c` with Browser Use Cloud CDP and
+  Agent SDK judge after API-backed search, repeated browser_script recovery,
+  partial finals on step cap, and restored terminal build cache. The first
+  completed row persisted a real final response and scored 100, proving the
+  previous all-empty result persistence failure is not reproducing in the
+  current eval branch. Terminal `7bbb857` then made single `http_get` match the
+  existing batch/browser_fetch structured-error contract, so repeated HTTP 403
+  source-fetch blocks are returned as recoverable data instead of crashing a
+  browser_script turn.
 
 ## Known Transitional Debt
 
