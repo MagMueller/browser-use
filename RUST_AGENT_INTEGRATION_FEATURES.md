@@ -252,6 +252,24 @@ This branch keeps the Python `Agent` unchanged unless callers explicitly import
    - Eval task, agent, save, and Agent SDK judge defaults now use one 45 minute
      budget instead of the previous 30 minute default, reducing synthetic
      cancellations on otherwise progressing Rust runs.
+   - Terminal max-turn aborts now emit an explicit `session.failed` event with a
+     partial result when the model produced useful text but did not call
+     `done(...)`. Browser-use reconstructs that partial answer as a failed
+     history result instead of returning the generic no-output error, so
+     timeboxed users still receive visible work.
+   - Terminal `browser_script` persistence skips functions, methods, classes,
+     and other callables while preserving simple picklable values. This avoids
+     poisoning the next script restore with unpicklable helper functions and
+     keeps user namespace collisions such as `from time import time` from
+     breaking the persistence cleanup path.
+   - Terminal `web_search` now routes through the local DuckDuckGo-backed
+     search implementation for providers without hosted web-search support
+     such as Anthropic. Claude eval runs therefore get real search results
+     from the familiar `web_search` tool name instead of a hosted no-op marker.
+   - Browser-use Rust usage reconstruction ignores terminal `token_count`
+     events marked as `context_estimate`. Synthetic context-window occupancy
+     counters still drive compaction/debugging, but dashboard usage and pricing
+     stay tied to provider/token-count billing events.
 
 ## Current Proof
 
@@ -330,6 +348,14 @@ This branch keeps the Python `Agent` unchanged unless callers explicitly import
 - terminal `cargo test -p browser-use-agent observe_timeout_is_clamped_to_coarse_poll_window -- --nocapture`
 - terminal `cargo test -p browser-use-agent prompts_avoid_screenshots_for_text_heavy_extraction -- --nocapture`
 - terminal `cargo test -p browser-use-agent browser_tool_descriptions_preserve_interaction_skills -- --nocapture`
+- terminal `cargo test -p browser-use-agent store_observer_publishes_max_turn_partial_as_session_failed`
+- terminal `cargo test -p browser-use-agent web_search_uses_local_search_for_non_hosted_providers`
+- terminal `cargo test -p browser-use-agent loop_aborts`
+- terminal `cargo test -p browser-use-agent agent_run_options_default`
+- terminal `cargo test -p browser-use-browser browser_script_helpers_survive_user_time_imports -- --test-threads=1`
+- terminal `cargo test -p browser-use-browser browser_script_skips_callables_without_poisoning_persistent_state -- --test-threads=1`
+- terminal `cargo test -p browser-use-browser browser_script_restores_picklable_user_state_between_calls -- --test-threads=1`
+- browser-use `uv run pytest tests/ci/test_rust_agent.py -k 'session_failed_partial_result or context_estimate_token_counts'`
 - evaluations-internal `PYTHONPATH=. uv run pytest tests/test_service_cli.py -k "task_timebox_defaults_to_single_generous_budget or agent_sdk_judge_timeout_default_uses_eval_budget or agent_sdk_judge_timeout_inherits_eval_override"`
 - terminal `cargo test -p browser-use-agent done_without_text_is_rejected -- --nocapture`
 - terminal `cargo test -p browser-use-agent fused_empty_done_requests_follow_up_instead_of_finalizing_none -- --nocapture`

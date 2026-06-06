@@ -1579,6 +1579,18 @@ def _last_streamed_assistant_text_from_events(events: list[dict[str, Any]]) -> s
 	return text or None
 
 
+def _partial_result_from_events(events: list[dict[str, Any]]) -> str | None:
+	for event in reversed(events):
+		if _event_type(event) != 'session.failed':
+			continue
+		payload = _event_payload(event)
+		for key in ('partial_result', 'partialResult', 'last_agent_message'):
+			value = payload.get(key)
+			if isinstance(value, str) and value.strip():
+				return value.strip()
+	return None
+
+
 def _attachments_from_events(events: list[dict[str, Any]]) -> list[str] | None:
 	attachments: list[str] = []
 	for event in events:
@@ -2882,6 +2894,15 @@ def _token_count_last_usage(payload: dict[str, Any]) -> dict[str, Any] | None:
 	return raw_usage if isinstance(raw_usage, dict) else None
 
 
+def _token_count_is_context_estimate(payload: dict[str, Any]) -> bool:
+	info = payload.get('info')
+	if isinstance(info, dict):
+		source = info.get('usage_source') or info.get('source')
+	else:
+		source = payload.get('usage_source') or payload.get('source')
+	return source == 'context_estimate'
+
+
 def _model_usage_payload(payload: dict[str, Any]) -> dict[str, Any]:
 	usage = payload.get('usage')
 	return usage if isinstance(usage, dict) else payload
@@ -2972,6 +2993,8 @@ def _usage_from_events(events: list[dict[str, Any]], model: str) -> UsageSummary
 			invocations += 1
 			continue
 		if event_type == 'token_count':
+			if _token_count_is_context_estimate(payload):
+				continue
 			token_usage = _token_count_usage(payload)
 			if token_usage is None:
 				continue
@@ -3085,6 +3108,8 @@ async def _usage_from_events_with_costs(
 		if event_type == 'model.usage':
 			raw_usage = _model_usage_payload(payload)
 		elif event_type == 'token_count':
+			if _token_count_is_context_estimate(payload):
+				continue
 			if has_model_usage:
 				continue
 			raw_usage = _token_count_last_usage(payload)
@@ -3161,6 +3186,8 @@ def _terminal_turn_usage_payload(events: list[dict[str, Any]]) -> dict[str, Any]
 		if event_type == 'model.usage':
 			raw_usage = _model_usage_payload(payload)
 		elif event_type == 'token_count':
+			if _token_count_is_context_estimate(payload):
+				continue
 			raw_usage = _token_count_last_usage(payload)
 	return raw_usage if isinstance(raw_usage, dict) else None
 
@@ -3835,7 +3862,10 @@ def _history_from_events(
 	final_result = _structured_result_text(_result_from_events(events), output_model_schema)
 	failure = process_error or _failure_from_events(events)
 	if final_result is None and failure is not None:
-		final_result = _structured_result_text(_last_streamed_assistant_text_from_events(events), output_model_schema)
+		final_result = _structured_result_text(
+			_partial_result_from_events(events) or _last_streamed_assistant_text_from_events(events),
+			output_model_schema,
+		)
 	if final_result is None and failure is None:
 		failure = _recoverable_failure_from_events(events)
 	if final_result is None and failure is None:

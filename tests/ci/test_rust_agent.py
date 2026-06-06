@@ -2183,6 +2183,133 @@ def test_rust_terminal_usage_mixed_events_do_not_shrink_totals():
 	assert summary.total_tokens == 570
 
 
+def test_rust_terminal_usage_ignores_context_estimate_token_counts():
+	from browser_use.rust.service import _usage_from_events
+
+	summary = _usage_from_events(
+		[
+			{
+				'event_type': 'token_count',
+				'payload': {
+					'info': {
+						'usage_source': 'context_estimate',
+						'total_token_usage': {
+							'input_tokens': 0,
+							'output_tokens': 0,
+							'total_tokens': 126_000,
+						},
+						'last_token_usage': {
+							'input_tokens': 0,
+							'output_tokens': 0,
+							'total_tokens': 126_000,
+						},
+					}
+				},
+			},
+			{
+				'event_type': 'token_count',
+				'payload': {
+					'info': {
+						'total_token_usage': {
+							'input_tokens': 500,
+							'cached_input_tokens': 100,
+							'output_tokens': 20,
+							'total_tokens': 520,
+						},
+						'last_token_usage': {
+							'input_tokens': 500,
+							'cached_input_tokens': 100,
+							'output_tokens': 20,
+							'total_tokens': 520,
+						},
+					}
+				},
+			},
+		],
+		'claude-sonnet-4-6',
+	)
+
+	assert summary.total_prompt_tokens == 500
+	assert summary.total_prompt_cached_tokens == 100
+	assert summary.total_completion_tokens == 20
+	assert summary.total_tokens == 520
+	assert summary.entry_count == 1
+
+
+async def test_rust_terminal_priced_usage_skips_context_estimates(monkeypatch):
+	from browser_use.rust.service import _usage_from_events_with_costs
+	from browser_use.tokens.service import TokenCost
+	from browser_use.tokens.views import TokenCostCalculated
+
+	calls: list[int] = []
+
+	async def fake_calculate_cost(_self, _model, usage):
+		calls.append(usage.total_tokens)
+		if usage.total_tokens > 10_000:
+			raise AssertionError('context estimates must not be priced')
+		return TokenCostCalculated(
+			new_prompt_tokens=usage.prompt_tokens,
+			new_prompt_cost=0.001,
+			prompt_read_cached_tokens=usage.prompt_cached_tokens,
+			prompt_read_cached_cost=0.0001,
+			prompt_cached_creation_tokens=usage.prompt_cache_creation_tokens,
+			prompt_cache_creation_cost=0.0,
+			completion_tokens=usage.completion_tokens,
+			completion_cost=0.002,
+		)
+
+	monkeypatch.setattr(TokenCost, 'calculate_cost', fake_calculate_cost)
+
+	summary = await _usage_from_events_with_costs(
+		[
+			{
+				'event_type': 'token_count',
+				'payload': {
+					'info': {
+						'usage_source': 'context_estimate',
+						'last_token_usage': {
+							'input_tokens': 0,
+							'output_tokens': 0,
+							'total_tokens': 126_000,
+						},
+						'total_token_usage': {
+							'input_tokens': 0,
+							'output_tokens': 0,
+							'total_tokens': 126_000,
+						},
+					}
+				},
+			},
+			{
+				'event_type': 'token_count',
+				'payload': {
+					'info': {
+						'last_token_usage': {
+							'input_tokens': 500,
+							'cached_input_tokens': 100,
+							'output_tokens': 20,
+							'total_tokens': 520,
+						},
+						'total_token_usage': {
+							'input_tokens': 500,
+							'cached_input_tokens': 100,
+							'output_tokens': 20,
+							'total_tokens': 520,
+						},
+					}
+				},
+			},
+		],
+		'claude-sonnet-4-6',
+		TokenCost(include_cost=True),
+	)
+
+	assert calls == [520]
+	assert summary.entry_count == 1
+	assert summary.total_tokens == 520
+	assert summary.total_cost == pytest.approx(0.0031)
+
+
 def test_rust_sdk_event_dedupe_removes_projected_usage_duplicates():
 	from browser_use.rust.service import _dedupe_sdk_events, _usage_from_events
 
@@ -7294,6 +7421,32 @@ def test_rust_history_marks_missing_terminal_result_as_error():
 	assert history.final_result() is None
 	assert history.is_done() is False
 	assert history.errors() == ['Rust terminal session did not produce a final result.']
+
+
+def test_rust_history_surfaces_session_failed_partial_result_without_success():
+	from browser_use.rust.service import _history_from_events
+
+	history = _history_from_events(
+		[
+			{
+				'event_type': 'session.failed',
+				'payload': {
+					'error': 'Rust terminal session reached the step limit before the agent explicitly finished.',
+					'partial_result': 'PARTIAL RESULT: found most requested rows.',
+				},
+			}
+		],
+		model='gpt-test',
+		started=1.0,
+		finished=2.0,
+		output_model_schema=None,
+		process_error=None,
+	)
+
+	assert history.final_result() == 'PARTIAL RESULT: found most requested rows.'
+	assert history.is_done() is False
+	assert history.is_successful() is None
+	assert history.errors() == ['Rust terminal session reached the step limit before the agent explicitly finished.']
 
 
 def test_rust_history_surfaces_terminal_stream_error_message():
