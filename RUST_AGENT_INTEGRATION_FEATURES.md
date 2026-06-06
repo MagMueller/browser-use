@@ -218,6 +218,20 @@ This branch keeps the Python `Agent` unchanged unless callers explicitly import
      the runtime observed-event path. SDK LLM prompts and Laminar spans therefore
      contain the task once instead of duplicating the same initial user message,
      which improves trace fidelity and reduces avoidable prompt/cache churn.
+   - Terminal `done` calls now require a non-empty `result`, `text`, or
+     `result_file`, and the fused sampler only treats such non-empty `done`
+     calls as terminal. Empty finalization is a recoverable tool error followed
+     by another model turn, preventing repeated eval cases where substantial
+     work ended as a user-visible `None` result.
+   - Fanout eval dispatches now pass `total_tasks` to every GitHub shard, and
+     runner progress updates preserve `assignedTaskRange` plus
+     `totalAssignedTasks` from registration through completion and Python stage
+     updates. This prevents the dashboard from reconciling active shards into
+     zero-step/no-score placeholder task rows.
+   - Eval runners now refresh server-side progress during long `run_agent` and
+     `evaluate` stages. Active fanout shards should stay visible as running
+     instead of going stale and being replaced by zero-step placeholder rows
+     while the GitHub Action is still inside `Run evaluation`.
    - Terminal `browser_script` now restores simple picklable Python variables
      and imported modules for the same browser session. Repeated chunked
      exploration/extraction calls can reuse prior intermediate values without
@@ -317,6 +331,11 @@ This branch keeps the Python `Agent` unchanged unless callers explicitly import
 - terminal `cargo test -p browser-use-agent prompts_avoid_screenshots_for_text_heavy_extraction -- --nocapture`
 - terminal `cargo test -p browser-use-agent browser_tool_descriptions_preserve_interaction_skills -- --nocapture`
 - evaluations-internal `PYTHONPATH=. uv run pytest tests/test_service_cli.py -k "task_timebox_defaults_to_single_generous_budget or agent_sdk_judge_timeout_default_uses_eval_budget or agent_sdk_judge_timeout_inherits_eval_override"`
+- terminal `cargo test -p browser-use-agent done_without_text_is_rejected -- --nocapture`
+- terminal `cargo test -p browser-use-agent fused_empty_done_requests_follow_up_instead_of_finalizing_none -- --nocapture`
+- terminal `cargo test -p browser-use-agent fused_done_result_becomes_final_message_without_follow_up -- --nocapture`
+- evaluations-internal `PYTHONPATH=. uv run pytest tests/test_service_cli.py -k "runner_progress_derives_fanout_assignment_from_env or fanout_dispatch_passes_total_tasks_to_each_shard or runner_progress_includes_present_optional_metadata or runner_progress_omits_null_optional_metadata"`
+- evaluations-internal `PYTHONPATH=. uv run pytest tests/test_service_cli.py -k "run_stage_with_progress_heartbeat_refreshes_active_stage or runner_progress_derives_fanout_assignment_from_env or fanout_dispatch_passes_total_tasks_to_each_shard or runner_progress_includes_present_optional_metadata or runner_progress_omits_null_optional_metadata"`
 - terminal `cargo fmt --check`
 - terminal `cargo test -p browser-use-cli sdk_run_attaches_child_agent_runner_to_provider_config -- --nocapture`
 - terminal `cargo test -p browser-use-agent subagent_tools_are_registered_in_the_dispatcher -- --nocapture`
