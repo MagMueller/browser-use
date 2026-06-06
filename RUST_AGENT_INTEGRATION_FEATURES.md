@@ -218,6 +218,26 @@ This branch keeps the Python `Agent` unchanged unless callers explicitly import
      the runtime observed-event path. SDK LLM prompts and Laminar spans therefore
      contain the task once instead of duplicating the same initial user message,
      which improves trace fidelity and reduces avoidable prompt/cache churn.
+   - Terminal `browser_script` now restores simple picklable Python variables
+     and imported modules for the same browser session. Repeated chunked
+     exploration/extraction calls can reuse prior intermediate values without
+     crashing on avoidable `NameError`, while durable final artifacts still go
+     through `outputs_dir()`.
+   - Terminal `browser_script` no longer has a separate 300 second default
+     ceiling. The default script timeout now matches the 45 minute eval task
+     budget, and observe progress checks default to 15 seconds so long scripts
+     are controlled by the agent/run timebox rather than an early per-script
+     failure.
+   - Terminal auto-compaction now defaults to a 100,000-token trigger through
+     `AgentRunOptions.model_auto_compact_token_limit`, with explicit overrides
+     and model context metadata still respected.
+   - Browser interaction prompts now ask the agent to use compact page
+     snapshots, focused DOM/accessibility summaries, and batched browser-backed
+     fetches instead of printing full page text/HTML/app caches during
+     exploration.
+   - Eval task, agent, save, and Agent SDK judge defaults now use one 45 minute
+     budget instead of the previous 30 minute default, reducing synthetic
+     cancellations on otherwise progressing Rust runs.
 
 ## Current Proof
 
@@ -289,6 +309,14 @@ This branch keeps the Python `Agent` unchanged unless callers explicitly import
 - terminal `cargo test -p browser-use-browser browser_script_browser_fetch_single_returns_structured_errors_by_default -- --nocapture`
 - terminal `cargo test -p browser-use-browser browser_script_js_accepts_anonymous_function_snippets -- --nocapture`
 - terminal `cargo test -p browser-use-browser browser_script_js_asyncifies_parenthesized_function_iife_with_await -- --nocapture`
+- terminal `cargo test -p browser-use-browser browser_script_restores_picklable_user_state_between_calls -- --nocapture`
+- terminal `cargo test -p browser-use-browser browser_script_start_observe_finishes_slow_scripts -- --nocapture`
+- terminal `cargo test -p browser-use-browser browser_script_timeout_returns_tool_failure -- --nocapture`
+- terminal `cargo test -p browser-use-agent agent_run_options_defaults_match_core -- --nocapture`
+- terminal `cargo test -p browser-use-agent observe_timeout_is_clamped_to_coarse_poll_window -- --nocapture`
+- terminal `cargo test -p browser-use-agent prompts_avoid_screenshots_for_text_heavy_extraction -- --nocapture`
+- terminal `cargo test -p browser-use-agent browser_tool_descriptions_preserve_interaction_skills -- --nocapture`
+- evaluations-internal `PYTHONPATH=. uv run pytest tests/test_service_cli.py -k "task_timebox_defaults_to_single_generous_budget or agent_sdk_judge_timeout_default_uses_eval_budget or agent_sdk_judge_timeout_inherits_eval_override"`
 - terminal `cargo fmt --check`
 - terminal `cargo test -p browser-use-cli sdk_run_attaches_child_agent_runner_to_provider_config -- --nocapture`
 - terminal `cargo test -p browser-use-agent subagent_tools_are_registered_in_the_dispatcher -- --nocapture`
