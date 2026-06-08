@@ -4796,6 +4796,7 @@ class Agent(Generic[Context, AgentStructuredOutput]):
 			resume_callback=self.resume,
 			custom_exit_callback=on_force_exit_log_telemetry,
 			exit_on_second_int=True,
+			disabled=not self.enable_signal_handler,
 		)
 		signal_handler.register()
 		self._run_signal_handler = signal_handler

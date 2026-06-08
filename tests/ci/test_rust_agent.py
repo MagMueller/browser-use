@@ -5871,6 +5871,31 @@ async def test_rust_agent_check_stop_or_pause_matches_browser_use_lifecycle():
 	assert paused_agent.state.paused is True
 
 
+def test_rust_agent_signal_handler_can_be_disabled_for_embedders(monkeypatch):
+	from browser_use.rust import Agent
+	from browser_use.rust import service as rust_service
+
+	seen = {}
+
+	class FakeSignalHandler:
+		def __init__(self, **kwargs):
+			seen.update(kwargs)
+
+		def register(self):
+			seen['registered'] = True
+
+		def unregister(self):
+			pass
+
+	monkeypatch.setattr(rust_service, 'SignalHandler', FakeSignalHandler)
+
+	agent = Agent(task='embedded run', enable_signal_handler=False)
+	agent._register_run_signal_handler(max_steps=5)
+
+	assert seen['disabled'] is True
+	assert seen['registered'] is True
+
+
 async def test_rust_agent_rerun_history_delegates_to_rust_run():
 	from browser_use.rust import Agent
 	from browser_use.rust.service import _history_from_events
